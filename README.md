@@ -47,9 +47,25 @@ For per-stage control on any driver, bypass `--gain` and use raw osmosdr args:
 Hardware runtime requirements (on the host running the survey):
 
 - GNU Radio (3.10+ recommended)
-- `gr-op25_repeater` Python module installed — same prerequisite as running op25's `multi_rx.py`
+- `gr-op25_repeater` Python module installed — built from the patched op25 fork at
+  [blantonl/op25 branch `p25-survey-patches`](https://github.com/blantonl/op25/tree/p25-survey-patches).
+  Two patches are required:
+    1. Guard the `op25_audio` destructor against an unstarted websocket thread
+       (otherwise the process aborts on shutdown when no destination is set).
+    2. Expose `frame_assembler::get_decode_stats()` so the survey tool can
+       compute BER and decode rate.
 - `gr-osmosdr` with the driver you're using (rtlsdr / airspy / hackrf)
 - A supported SDR plugged in
+
+To install the patched op25 on a Debian/Ubuntu host:
+
+```bash
+git clone https://github.com/blantonl/op25.git
+cd op25 && git checkout p25-survey-patches
+sudo apt-get install -y libcppunit-dev cmake build-essential pkg-config \
+    python3-pybind11 libsndfile1-dev libspdlog-dev
+mkdir build && cd build && cmake .. && make -j$(nproc) && sudo make install && sudo ldconfig
+```
 
 Pure unit tests (`make test`) don't need any of the above.
 
