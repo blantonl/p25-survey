@@ -255,6 +255,16 @@ def decode_candidate(
     rx_q = gr.msg_queue(2048)
     msgq_id = 0
 
+    state = _DwellState()
+    complete = False
+
+    # Suppress all C-level stderr for the duration of the decode. op25's
+    # C++ blocks emit periodic chatter (IMBE codeword dumps, "two-stage
+    # decimator" notices, websocket lifecycle, etc.) on debug>=10 and even
+    # at debug=0 they leak some lines. Survey runs don't care about voice
+    # decoder internals; suppressing keeps the live table clean. Real
+    # GR/osmosdr errors (device disconnect, etc.) are also suppressed —
+    # acceptable trade-off for now.
     with suppress_c_stderr():
         tb = gr.top_block()
         src = osmosdr.source(args=device_args)
@@ -285,7 +295,7 @@ def decode_candidate(
         # RSSI tap — magnitude-squared of source IQ averaged over ~10 ms,
         # readable via probe.level(). Branched off the source so it doesn't
         # disturb the demod chain.
-        rssi_window = max(1024, sample_rate_hz // 100)  # ~10 ms of samples
+        rssi_window = max(1024, sample_rate_hz // 100)
         rssi_mag = blocks.complex_to_mag_squared()
         rssi_avg = blocks.moving_average_ff(rssi_window, 1.0 / rssi_window)
         rssi_probe = blocks.probe_signal_f()
@@ -294,45 +304,40 @@ def decode_candidate(
         tb.connect(src, rssi_mag, rssi_avg, rssi_probe)
         tb.start()
 
-    state = _DwellState()
-    started = time.monotonic()
-    deadline = started + max_dwell_s
-    confirm_deadline = started + confirm_timeout_s
-    next_rssi_sample = started + 0.25  # let AGC + flowgraph settle
-    complete = False
+        started = time.monotonic()
+        deadline = started + max_dwell_s
+        confirm_deadline = started + confirm_timeout_s
+        next_rssi_sample = started + 0.25  # let AGC + flowgraph settle
 
-    try:
-        while True:
-            now = time.monotonic()
-            if now >= next_rssi_sample:
-                # probe.level() returns a linear power (mean |IQ|^2). Convert
-                # to dBFS using normalized full-scale = 1.0.
-                level = float(rssi_probe.level())
-                if level > 0:
-                    state.rssi_samples.append(10.0 * math.log10(level))
-                # Refresh TSBK CRC counters from op25 (cheap call).
-                stats = fa.get_decode_stats()
-                state.tsbk_attempted = int(stats.tsbk_attempted)
-                state.tsbk_passed = int(stats.tsbk_passed)
-                next_rssi_sample = now + 0.1
-            if not rx_q.empty_p():
-                msg = rx_q.delete_head()
-                if msg is None:
-                    break
-                _process_msg(msg, state)
-            else:
-                if state.broadcast_count == 0 and now >= confirm_deadline:
-                    break
-                if state.has_core_id() and len(state.freq_table) > 0 and \
-                        state.neighbors_settled(now, started):
-                    complete = True
-                    break
-                if now >= deadline:
-                    break
-                time.sleep(0.05)
-    finally:
-        tb.stop()
-        tb.wait()
+        try:
+            while True:
+                now = time.monotonic()
+                if now >= next_rssi_sample:
+                    level = float(rssi_probe.level())
+                    if level > 0:
+                        state.rssi_samples.append(10.0 * math.log10(level))
+                    stats = fa.get_decode_stats()
+                    state.tsbk_attempted = int(stats.tsbk_attempted)
+                    state.tsbk_passed = int(stats.tsbk_passed)
+                    next_rssi_sample = now + 0.1
+                if not rx_q.empty_p():
+                    msg = rx_q.delete_head()
+                    if msg is None:
+                        break
+                    _process_msg(msg, state)
+                else:
+                    if state.broadcast_count == 0 and now >= confirm_deadline:
+                        break
+                    if state.has_core_id() and len(state.freq_table) > 0 and \
+                            state.neighbors_settled(now, started):
+                        complete = True
+                        break
+                    if now >= deadline:
+                        break
+                    time.sleep(0.05)
+        finally:
+            tb.stop()
+            tb.wait()
 
     dwell_ms = int((time.monotonic() - started) * 1000)
     return _state_to_record(

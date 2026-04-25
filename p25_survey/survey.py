@@ -130,10 +130,14 @@ class SurveyRecord:
 
 
 class SurveyWriter:
-    """Append-only NDJSON writer with optional resume.
+    """NDJSON writer with optional resume.
 
-    On construction with resume=True, reads any existing records from `path`
-    so callers can ask `already_characterized(freq_hz)` to skip work.
+    Default behavior: truncates the output file at construction so a
+    fresh scan never silently appends to a previous run's data.
+
+    With resume=True: reads any existing records from `path`, keeps them in
+    place, and exposes `already_characterized(freq_hz)` so the caller can
+    skip already-done frequencies and append only new ones.
     """
 
     def __init__(self, path: str | Path, resume: bool = False) -> None:
@@ -141,6 +145,11 @@ class SurveyWriter:
         self._existing_freqs: set[int] = set()
         if resume and self.path.exists():
             self._existing_freqs = _read_existing_freqs(self.path)
+        elif not resume:
+            # Truncate any previous content. Crash safety for the new run is
+            # preserved because each subsequent append() flushes + fsyncs.
+            if self.path.exists() or self.path.parent.exists():
+                self.path.write_text("", encoding="utf-8")
 
     @property
     def existing_freqs(self) -> set[int]:

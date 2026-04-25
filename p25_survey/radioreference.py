@@ -162,22 +162,28 @@ class RRClient:
         """Verify credentials by calling getUserData. Raises RRAuthError on
         invalid login. Used as the auth-validation step at startup."""
         body = self._call("getUserData")
-        info = _find_child(body, "getUserDataReturn")
+        # RPC-style responses often wrap the payload in <return> rather than
+        # <getUserDataReturn>; sometimes neither, just the fields directly.
+        # Find any element that has both <username> and <subExpireDate>
+        # children; that's UserInfo regardless of the wrapper.
+        info = _find_struct_with_children(body, ["username", "subExpireDate"])
         if info is None:
-            raise RRError("getUserData returned no result")
-        return RRUser(
-            username=_text(info, "username"),
-            sub_expire_date=_text(info, "subExpireDate"),
-        )
+            info = body
+        username = _text(info, "username")
+        sub_expire = _text(info, "subExpireDate")
+        if not username:
+            raise RRError(f"getUserData: could not parse UserInfo from response. "
+                          f"Set P25_SURVEY_RR_DEBUG=1 to dump raw XML.")
+        return RRUser(username=username, sub_expire_date=sub_expire)
 
     def find_system_by_wacn_sysid(self, wacn_hex: str, sysid_hex: str) -> RRSystem | None:
         """Look up a system by P25 WACN + SYSID. Returns the matching RRSystem
         (with sid populated) or None.
 
-        getTrsBySysid(sysid) returns all systems with that sysid (could be
-        multiple — sysid is not unique across WACNs). We then fetch
-        getTrsDetails for each to find the one whose sysid array carries
-        our WACN.
+        getTrsBySysid(sysid) returns a SOAP-ENC:Array (typed
+        TrsListDef[N]). RR encodes array members as <item xsi:type="tns:TrsListDef">.
+        We then fetch getTrsDetails for each candidate to find the one
+        whose sysid array carries our WACN.
         """
         cache_key = ("wacn_sysid", wacn_hex.upper(), sysid_hex.upper())
         if cache_key in self._cache:
@@ -186,15 +192,13 @@ class RRClient:
         # Step 1: fan out by SYSID
         body = self._call("getTrsBySysid", [("sysid", sysid_hex.upper())])
         candidates: list[int] = []
-        for trs in body.iter():
-            tag = _strip_ns(trs.tag)
-            if tag in ("getTrsBySysidReturn", "TrsListDef"):
-                sid_text = _text(trs, "sid")
-                if sid_text:
-                    try:
-                        candidates.append(int(sid_text))
-                    except ValueError:
-                        pass
+        for sid_elem in _array_items(body, ["sid"]):
+            sid_text = _text(sid_elem, "sid")
+            if sid_text:
+                try:
+                    candidates.append(int(sid_text))
+                except ValueError:
+                    pass
 
         # Step 2: filter by WACN via getTrsDetails on each candidate.
         for sid in candidates:
@@ -211,17 +215,23 @@ class RRClient:
         if cache_key in self._cache:
             return self._cache[cache_key]
         body = self._call("getTrsDetails", [("sid", str(sid))])
-        trs = _find_child(body, "getTrsDetailsReturn")
+        # The Trs structure lives inside <return xsi:type="tns:Trs">.
+        trs = _find_child(body, "return")
         if trs is None:
-            raise RRError(f"getTrsDetails({sid}) returned no Trs")
+            trs = _find_struct_with_children(body, ["sName"])
+        if trs is None:
+            trs = body
+        # The <sysid> array in the Trs has <item xsi:type="tns:TrsSysid"> members.
+        sysid_arr = _find_child(trs, "sysid")
         sysid_entries: list[RRSysidEntry] = []
-        for sysid_elem in trs.iter():
-            if _strip_ns(sysid_elem.tag) == "TrsSysid":
-                wacn = _text(sysid_elem, "wacn") or _text(sysid_elem, "WACN") or ""
-                sysid = _text(sysid_elem, "sysid") or ""
-                nac = _text(sysid_elem, "nac") or None
-                if sysid:
-                    sysid_entries.append(RRSysidEntry(wacn=wacn, sysid=sysid, nac=nac))
+        if sysid_arr is not None:
+            for item in _array_items(sysid_arr, ["sysid"]):
+                # Inside each item, fields are <wacn>, <sysid>, <nac>.
+                wacn = _text(item, "wacn") or _text(item, "WACN") or ""
+                sid_text = _text(item, "sysid") or ""
+                nac = _text(item, "nac") or None
+                if sid_text:
+                    sysid_entries.append(RRSysidEntry(wacn=wacn, sysid=sid_text, nac=nac))
         sys = RRSystem(
             sid=sid,
             name=_text(trs, "sName"),
@@ -238,26 +248,28 @@ class RRClient:
         if cache_key in self._cache:
             return self._cache[cache_key]
         body = self._call("getTrsSites", [("sid", str(sid))])
+        # <return xsi:type="SOAP-ENC:Array" arrayType="TrsSite[N]">
+        # Members are <item xsi:type="tns:TrsSite">.
         sites: list[RRSite] = []
-        for site_elem in body.iter():
-            if _strip_ns(site_elem.tag) != "TrsSite":
-                continue
+        for site_elem in _array_items(body, ["rfss", "siteNumber"]):
+            # The TrsSite contains a siteFreqs array of <item xsi:type="tns:TrsSiteFreq">.
+            freq_arr = _find_child(site_elem, "siteFreqs")
             freqs: list[RRSiteFreq] = []
-            for fe in site_elem.iter():
-                if _strip_ns(fe.tag) != "TrsSiteFreq":
-                    continue
-                freq_mhz = _decimal(fe, "freq")
-                if freq_mhz is None:
-                    continue
-                freqs.append(RRSiteFreq(
-                    freq_hz=int(round(freq_mhz * 1_000_000)),
-                    lcn=_int(fe, "lcn") or None,
-                    use=_text(fe, "use"),
-                    color_code=_text(fe, "colorCode"),
-                ))
+            if freq_arr is not None:
+                for fe in _array_items(freq_arr, ["freq"]):
+                    freq_mhz = _decimal(fe, "freq")
+                    if freq_mhz is None:
+                        continue
+                    freqs.append(RRSiteFreq(
+                        freq_hz=int(round(freq_mhz * 1_000_000)),
+                        lcn=_int(fe, "lcn") or None,
+                        use=_text(fe, "use"),
+                        color_code=_text(fe, "colorCode"),
+                    ))
             licenses: list[str] = []
-            for le in site_elem.iter():
-                if _strip_ns(le.tag) == "TrsSiteLicense":
+            lic_arr = _find_child(site_elem, "siteLicenses")
+            if lic_arr is not None:
+                for le in _array_items(lic_arr, ["license"]):
                     lic = _text(le, "license")
                     if lic:
                         licenses.append(lic)
@@ -331,6 +343,11 @@ class RRClient:
 """
 
     def _parse_response(self, op: str, raw: bytes) -> ET.Element:
+        if os.environ.get("P25_SURVEY_RR_DEBUG"):
+            import sys
+            sys.stderr.write(f"\n--- RR {op} raw response ---\n")
+            sys.stderr.write(raw.decode("utf-8", errors="replace"))
+            sys.stderr.write("\n--- end response ---\n")
         try:
             root = ET.fromstring(raw)
         except ET.ParseError as e:
@@ -366,6 +383,37 @@ def _find_child(parent: ET.Element, name: str) -> ET.Element | None:
         if _strip_ns(child.tag) == name:
             return child
     return None
+
+
+def _find_struct_with_children(parent: ET.Element, required_child_names: list[str]) -> ET.Element | None:
+    """Find any descendant element whose immediate children include ALL of the
+    given local-names. Used to locate result structures by content rather
+    than by RPC/document-style wrapper element names.
+    """
+    needed = set(required_child_names)
+    for elem in parent.iter():
+        local_kids = {_strip_ns(c.tag) for c in elem}
+        if needed.issubset(local_kids):
+            return elem
+    return None
+
+
+def _array_items(parent: ET.Element, required_field_names: list[str]) -> list[ET.Element]:
+    """Find SOAP-ENC:Array members anywhere under `parent`.
+
+    RR returns arrays as `<return xsi:type="SOAP-ENC:Array">` containing
+    `<item xsi:type="tns:TypeName">` children. The element name `<item>`
+    isn't a hard rule (some servers use the type name); we accept any
+    element whose immediate children include all of `required_field_names`,
+    which uniquely identifies the array members regardless of tag name.
+    """
+    needed = set(required_field_names)
+    out: list[ET.Element] = []
+    for elem in parent.iter():
+        local_kids = {_strip_ns(c.tag) for c in elem}
+        if needed.issubset(local_kids):
+            out.append(elem)
+    return out
 
 
 def _text(parent: ET.Element, name: str) -> str:

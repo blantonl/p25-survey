@@ -19,13 +19,33 @@ from typing import Iterator
 
 @contextmanager
 def suppress_c_stderr() -> Iterator[None]:
+    """Silence both C-level fd 2 writes AND Python `sys.stderr` writes.
+
+    GNU Radio + op25 emit chatter from two layers:
+      - C++ fprintf(stderr, ...) writes via libc to fd 2.
+      - Python `sys.stderr.write(...)` (e.g. p25_demodulator.py's
+        "Using two-stage decimator..." line) writes via TextIOWrapper.
+
+    A dup2 over fd 2 alone catches the C++ side but doesn't reliably
+    redirect Python's stderr, so we also swap `sys.stderr` for a /dev/null
+    file object during the context.
+    """
     sys.stderr.flush()
     old_fd = os.dup(2)
-    devnull = os.open(os.devnull, os.O_WRONLY)
+    devnull_w = os.open(os.devnull, os.O_WRONLY)
+    saved_py_stderr = sys.stderr
+    py_devnull = open(os.devnull, "w")  # noqa: SIM115 — closed in finally
     try:
-        os.dup2(devnull, 2)
+        os.dup2(devnull_w, 2)
+        sys.stderr = py_devnull
         yield
     finally:
+        try:
+            py_devnull.flush()
+            py_devnull.close()
+        except Exception:
+            pass
+        sys.stderr = saved_py_stderr
         os.dup2(old_fd, 2)
         os.close(old_fd)
-        os.close(devnull)
+        os.close(devnull_w)

@@ -230,6 +230,90 @@ For local dev, `[project.optional-dependencies] dev` still pulls them in via `pi
 
 ---
 
+## 2026-04-25 — `--threshold` is a margin above noise floor (not below)
+
+**Decision:** The `--threshold N` flag is **dB above the chunk's median PSD**, not
+below it. A bin is a candidate when `psd_db > median(psd_db) + threshold_db`.
+
+**Why this convention:** "How much above noise" is the natural language for
+spectral-peak detection. Lower margin = more sensitive (catches weaker
+signals); higher margin = pickier (only strong signals).
+
+**Calibration guide:**
+- 6–10 dB: sensitive, more false positives, useful for weak/distant CCs (rural VHF).
+- 12–16 dB: balanced; the default of 8 leans sensitive.
+- 18+ dB: only strong signals; fast scan; might miss weak CCs.
+
+A low threshold doesn't hurt final-report correctness — Phase 2's
+`--confirm-timeout` filters non-P25 noise at the decode step. The cost of a
+low threshold is **time** spent abandoning no-cc candidates.
+
+---
+
+## 2026-04-25 — `--rr` integration uses our own minimal SOAP client
+
+**Decision:** Hand-rolled SOAP client in `radioreference.py` using `urllib`
++ `xml.etree.ElementTree`. No `zeep`/`suds` dependency. Operations:
+`getUserData`, `getTrsBySysid`, `getTrsDetails`, `getTrsSites`.
+
+**Why:** Adding `zeep` would mean another bundled-vs-host-installed
+decision, and we only need 4 operations. RR returns SOAP-ENC arrays where
+members are `<item xsi:type="...">` elements, not the type-named elements
+the WSDL implies — our parser detects items by content (presence of
+expected child fields) rather than by tag name. More robust to RR's actual
+wire format.
+
+**Auth:** Username + password prompted at startup (`getpass.getpass` for
+the password). **Never stored on disk.** App-level key bundled in
+`_BUNDLED_APP_KEY`; can be overridden with `P25_SURVEY_APPKEY` env var.
+In-memory cache scoped to the scan run.
+
+---
+
+## 2026-04-25 — `--auto-gain`: BER as the optimization signal
+
+**Decision:** After Phase 2 finishes, optionally sweep 5 gain values × 4 s
+dwell on each confirmed CC. Pick the gain that minimizes per-channel block
+error rate (BER as proxy). Aggregate to a per-band median recommendation.
+
+**Why BER and not RSSI:** Strong RSSI doesn't mean clean decode. A too-hot
+front end has high RSSI and bad BER (compression / IMD). BER is the only
+metric that finds the actual decoder sweet spot.
+
+**Default sweep grid per driver:**
+- Airspy: `[4, 8, 12, 16, 20]` (linearity 0–21)
+- RTL-SDR: `[10, 20, 30, 40, 49.6]` (tuner gain table)
+- HackRF: `[12, 24, 36, 48, 60]` (IF/VGA 0–62)
+
+User can override with `--gain-sweep "4,8,12,16,20"`.
+
+**Tie-breaking** in `pick_best_gain()`: lowest BER wins; ties go to highest
+decode_rate, then to lower gain (less front-end strain on stronger signal
+days).
+
+**Rescan prompt:** After the sweep, the tool offers to re-run with the
+recommended gain (default Yes; new output filename to preserve the original
+survey). The rescan disables `--auto-gain` to prevent recommend→rescan
+loops. If stdin isn't a TTY, no prompt.
+
+---
+
+## 2026-04-25 — `--output` truncates by default
+
+**Decision:** Without `--resume`, an existing `--output` file is truncated
+at scan startup. With `--resume`, it's preserved and we skip already-done
+frequencies.
+
+**Why:** Append-only-by-default caused real confusion in testing — running
+the same scan twice silently concatenated results, and the report rendered
+both stale and fresh records side by side. CLI convention is "truncate by
+default, --append/--resume to keep". We match that.
+
+Per-record fsync still applies during the run, so crash safety is preserved
+either way.
+
+---
+
 ## Open questions / deferred decisions
 
 These will be resolved as implementation forces the issue. Listed here so we don't forget:
