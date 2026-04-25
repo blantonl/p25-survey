@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "p25-survey"
+version = "0.1.0"
+description = "Scan a frequency range for P25 control channels and log system metadata"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "GPL-3.0-or-later" }
+authors = [{ name = "Lindsay", email = "lindsay@radioreference.com" }]
+
+# No runtime install_requires.
+#
+# numpy and scipy are intentionally NOT bundled: on any host capable of
+# running GNU Radio they're already present (gnuradio links against the
+# system numpy, and shipping our own copy creates ABI mismatches). rich is
+# also expected on the host for the optional live console table.
+dependencies = []
+
+[project.optional-dependencies]
+# `pip install -e .[dev]` for local development (tests + packaging tools).
+dev = [
+    "pytest>=7.0",
+    "shiv>=1.0",
+    "ruff>=0.1",
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "rich>=13.0",
+]
+
+[project.scripts]
+p25-survey = "p25_survey.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["p25_survey*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"

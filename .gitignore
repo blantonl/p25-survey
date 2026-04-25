@@ -1,0 +1,33 @@
+# Build artifact (single-file shiv executable)
+/p25-survey
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# Distribution
+build/
+dist/
+
+# Survey outputs (NDJSON + text reports — never commit live scan results)
+survey-*.json
+survey-*.txt
+*.ndjson
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
