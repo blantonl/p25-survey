@@ -71,6 +71,10 @@ class SurveyRecord:
     sdr_gain_db: float | None = None
     sdr_ppm: float = 0.0
     notes: list[str] = field(default_factory=list)
+    # RR enrichment, attached after lookup. Stored as a generic dict so
+    # survey.py stays free of any RR-specific imports. Populated from
+    # EnrichmentResult.to_json_dict() in the orchestrator.
+    rr: dict[str, Any] | None = None
 
     def to_json_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -116,6 +120,7 @@ class SurveyRecord:
             sdr_gain_db=d.get("sdr_gain_db"),
             sdr_ppm=d.get("sdr_ppm", 0.0),
             notes=list(d.get("notes", []) or []),
+            rr=d.get("rr"),
         )
 
 

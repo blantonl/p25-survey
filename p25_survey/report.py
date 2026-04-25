@@ -41,6 +41,43 @@ def _fmt_signal(record: SurveyRecord) -> str:
     return ", ".join(parts) if parts else "—"
 
 
+def _fmt_rr(record: SurveyRecord) -> str:
+    """One-line RR match summary, or empty string if no enrichment."""
+    rr = record.rr
+    if not rr:
+        return ""
+    if not rr.get("system_match"):
+        if record.wacn is not None:
+            return "RR: NEW SYSTEM (not in database)"
+        return ""
+    sys_name = rr.get("rr_system_name") or "(unknown)"
+    if not rr.get("site_match"):
+        return f"RR: {sys_name} — NEW SITE for RFSS/Site"
+    parts = [f"RR: {sys_name}"]
+    if rr.get("rr_site_description"):
+        parts.append(rr["rr_site_description"])
+    if rr.get("rr_site_county"):
+        parts.append(rr["rr_site_county"])
+    cc = rr.get("cc_freq_offset")
+    if cc:
+        offset_hz = cc.get("offset_hz", 0)
+        ppm = cc.get("ppm", 0.0)
+        if rr.get("cc_freq_in_db"):
+            sign = "+" if offset_hz >= 0 else ""
+            parts.append(f"freq match (offset {sign}{offset_hz} Hz, {sign}{ppm:.3f} ppm)")
+        else:
+            sign = "+" if offset_hz >= 0 else ""
+            parts.append(f"FREQ MISMATCH: RR={cc['expected_hz'] / 1e6:.5f} MHz, "
+                         f"offset {sign}{offset_hz} Hz")
+    n_extra = len(rr.get("neighbors_decoded_not_in_rr") or [])
+    n_missing = len(rr.get("neighbors_in_rr_not_decoded") or [])
+    if n_extra:
+        parts.append(f"{n_extra} extra neighbor(s) not in RR")
+    if n_missing:
+        parts.append(f"{n_missing} RR neighbor(s) not observed")
+    return "; ".join(parts)
+
+
 def render_record(record: SurveyRecord, out: StringIO) -> None:
     """Write one record's section."""
     header = f"{_fmt_freq_mhz(record.freq_hz)}  WACN {_fmt_hex(record.wacn, 5)}  " \
@@ -53,6 +90,9 @@ def render_record(record: SurveyRecord, out: StringIO) -> None:
     out.write(f"  Dwell:        {record.dwell_ms} ms"
               f"  ({'complete' if record.complete else 'partial'})\n")
     out.write(f"  Signal:       {_fmt_signal(record)}\n")
+    rr_line = _fmt_rr(record)
+    if rr_line:
+        out.write(f"  {rr_line}\n")
     if record.sdr_driver:
         gain_str = f"{record.sdr_gain_db} dB" if record.sdr_gain_db is not None else "default"
         out.write(f"  SDR:          {record.sdr_driver}, gain {gain_str}, ppm {record.sdr_ppm}\n")

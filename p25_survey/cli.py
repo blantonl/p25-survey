@@ -36,6 +36,7 @@ class SurveyConfig:
     resume: bool
     thorough: bool
     phase1_only: bool
+    rr_enabled: bool
     verbose: bool
 
 
@@ -113,6 +114,12 @@ def build_parser() -> argparse.ArgumentParser:
     out.add_argument("--verbose", "-v", action="store_true",
                      help="Verbose console logging.")
 
+    rr = p.add_argument_group("RadioReference enrichment")
+    rr.add_argument("--rr", action="store_true",
+                    help="Cross-reference decoded systems against the RadioReference "
+                         "database. Prompts for username + password at startup. "
+                         "Produces a survey-*-submissions.md alongside the JSON+TXT.")
+
     return p
 
 
@@ -142,6 +149,7 @@ def resolve_config(args: argparse.Namespace) -> SurveyConfig:
         resume=args.resume,
         thorough=args.thorough,
         phase1_only=args.phase1_only,
+        rr_enabled=args.rr,
         verbose=args.verbose,
     )
 
@@ -167,6 +175,39 @@ def print_config_summary(cfg: SurveyConfig) -> None:
 def _resolve_driver(cfg: SurveyConfig) -> str | None:
     from p25_survey.sdr import autoprobe_driver
     return cfg.sdr or autoprobe_driver()
+
+
+def _connect_rr(cfg: SurveyConfig):
+    """Prompt for RadioReference credentials and verify with getUserData.
+
+    Per the project's auth policy, credentials are NOT stored anywhere on
+    disk — prompted fresh each scan. Returns an authenticated RRClient or
+    aborts the scan if auth fails.
+    """
+    import getpass
+    from p25_survey.radioreference import RRAuthError, RRClient, RRError, app_key
+
+    if not app_key():
+        print("error: --rr requires the bundled p25-survey appKey to be set, or "
+              "P25_SURVEY_APPKEY env var. The release build should already have "
+              "this baked in.", flush=True)
+        raise SystemExit(2)
+
+    print()
+    print("RadioReference authentication (credentials are not stored)")
+    username = input("  Username: ").strip()
+    password = getpass.getpass("  Password: ")
+    try:
+        client = RRClient(username=username, password=password)
+        user = client.get_user_data()
+    except RRAuthError as exc:
+        print(f"error: RadioReference auth failed: {exc}", flush=True)
+        raise SystemExit(2)
+    except RRError as exc:
+        print(f"error: RadioReference: {exc}", flush=True)
+        raise SystemExit(2)
+    print(f"  Logged in as {user.username} (subscription expires {user.sub_expire_date})")
+    return client
 
 
 def _run_scan(cfg: SurveyConfig) -> int:
@@ -231,10 +272,14 @@ def _run_scan(cfg: SurveyConfig) -> int:
     from p25_survey.report import render_file
     from p25_survey.survey import SurveyWriter
 
+    rr_client = _connect_rr(cfg) if cfg.rr_enabled else None
+
     writer = SurveyWriter(cfg.output_path, resume=cfg.resume)
     skipped = sum(1 for c in candidates if writer.already_characterized(c.freq_hz))
     to_do = [c for c in candidates if not writer.already_characterized(c.freq_hz)]
 
+    enrichments: dict[int, "EnrichmentResult"] = {}
+    all_records: list = []
     confirmed = 0
     with make_display(total=len(to_do), skipped=skipped) as display:
         for cand in to_do:
@@ -249,7 +294,13 @@ def _run_scan(cfg: SurveyConfig) -> int:
                 max_dwell_s=cfg.max_dwell_s,
                 debug=10 if cfg.verbose else 0,
             )
+            if rr_client is not None and record.wacn is not None:
+                from p25_survey.enrich import enrich_record
+                enr = enrich_record(record, rr_client)
+                record.rr = enr.to_json_dict()
+                enrichments[record.freq_hz] = enr
             writer.append(record)
+            all_records.append(record)
             if record.complete:
                 confirmed += 1
                 status = "complete"
@@ -258,6 +309,24 @@ def _run_scan(cfg: SurveyConfig) -> int:
             else:
                 status = "partial"
             display.add(record, status)
+
+    # ----- post-scan: per-band offsets + submission report -----
+    if rr_client is not None and enrichments:
+        from p25_survey.enrich import summarize_band_offsets
+        from p25_survey.submission import render_file as render_submission
+
+        offsets = summarize_band_offsets(all_records, enrichments)
+        if offsets:
+            print()
+            print("RadioReference frequency offsets per band (use to calibrate --ppm):")
+            print(f"  {'Band':<55} {'N':>3} {'Mean ppm':>10} {'Median':>8}")
+            for s in offsets:
+                print(f"  {s.band_name:<55} {s.n_samples:>3} "
+                      f"{s.mean_ppm:>+10.3f} {s.median_ppm:>+8.3f}")
+
+        sub_path = os.path.splitext(cfg.output_path)[0] + "-submissions.md"
+        render_submission(all_records, enrichments, sub_path)
+        print(f"  Submission report: {sub_path}")
 
     # Render text report alongside the JSON survey.
     txt_path = os.path.splitext(cfg.output_path)[0] + ".txt"
