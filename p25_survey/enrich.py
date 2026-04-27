@@ -6,7 +6,8 @@ Given a decoded `SurveyRecord` and an `RRClient`, produce an
   - whether the RFSS/Site is in RR
   - whether the decoded CC frequency matches one listed for the site
   - the absolute and ppm offset between decoded and listed frequency
-  - which neighbors we found that aren't in RR's neighbor list
+  - which neighbors we found whose (RFSS, Site) aren't listed for the
+    system in RR (and vice versa, for admin-update visibility)
 
 The result is attached to `SurveyRecord.rr` (a new optional field). The
 output stages — text report, submission report, console summary — read
@@ -43,6 +44,20 @@ class FreqOffset:
 
 
 @dataclass
+class NeighborRef:
+    """Reference to a neighbor site by (rfss, site) identity.
+
+    Used by the diff fields below — comparison is keyed on the IDs, but we
+    carry along whatever frequency / description we know so the report can
+    render something more useful than bare numbers.
+    """
+    rfss_id: int
+    site_id: int
+    freq_hz: int | None = None        # decoded CC (decoded side) or RR-listed CC (RR side)
+    description: str | None = None    # RR site description, when known
+
+
+@dataclass
 class EnrichmentResult:
     """All info we know about an SurveyRecord after RR cross-reference.
 
@@ -70,9 +85,15 @@ class EnrichmentResult:
     cc_freq_offset: FreqOffset | None = None
     cc_freq_in_db: bool = False              # decoded freq matches some listed CC
 
-    # Neighbor diff (only when site_match=True)
-    neighbors_in_rr_not_decoded: list[int] = field(default_factory=list)   # freqs we missed
-    neighbors_decoded_not_in_rr: list[int] = field(default_factory=list)   # freqs RR doesn't list
+    # Neighbor diff (only when site_match=True). Keyed on (rfss_id, site_id)
+    # — comparing frequencies is wrong because ADJ_STS_BCST advertises a
+    # subset of system sites, and even within that subset RR's per-site
+    # frequency list includes voice/data channels we'd never observe in
+    # ADJ_STS_BCST. The reference set here is "all other sites in the RR
+    # system roster", which is a useful "candidates RR admins might update"
+    # signal but is broader than the actual neighbor relationship.
+    neighbors_decoded_not_in_rr: list[NeighborRef] = field(default_factory=list)
+    neighbors_in_rr_not_decoded: list[NeighborRef] = field(default_factory=list)
 
     # Free-form
     notes: list[str] = field(default_factory=list)
@@ -156,12 +177,32 @@ def enrich_record(record: SurveyRecord, client: RRClient) -> EnrichmentResult:
         )
         result.cc_freq_in_db = abs(offset) < 1000  # within 1 kHz = same channel
 
-    # Neighbor comparison: compare RR's other-site CC freqs vs our neighbor list
-    rr_neighbor_freqs = _rr_neighbor_freqs(sites, exclude_site=site)
-    decoded_neighbor_freqs = {n.freq_hz for n in record.neighbors}
+    # Neighbor comparison: compare by (rfss, site) identity, not frequency.
+    # ADJ_STS_BCST gives us per-neighbor RFSS+Site IDs directly; RR sites
+    # also carry rfss + site_number. Frequency-based comparison was wrong
+    # both because ADJ_STS_BCST ≠ system roster and because RR's per-site
+    # frequency list includes voice/data channels.
+    rr_neighbor_sites = _rr_neighbor_sites(sites, exclude_site=site)
+    decoded_by_id = {(n.rfss_id, n.site_id): n for n in record.neighbors}
 
-    result.neighbors_in_rr_not_decoded = sorted(rr_neighbor_freqs - decoded_neighbor_freqs)
-    result.neighbors_decoded_not_in_rr = sorted(decoded_neighbor_freqs - rr_neighbor_freqs)
+    decoded_ids = set(decoded_by_id.keys())
+    rr_ids = set(rr_neighbor_sites.keys())
+
+    result.neighbors_decoded_not_in_rr = [
+        NeighborRef(
+            rfss_id=rfss, site_id=sid,
+            freq_hz=decoded_by_id[(rfss, sid)].freq_hz,
+        )
+        for (rfss, sid) in sorted(decoded_ids - rr_ids)
+    ]
+    result.neighbors_in_rr_not_decoded = [
+        NeighborRef(
+            rfss_id=rfss, site_id=sid,
+            freq_hz=_first_control_freq(rr_neighbor_sites[(rfss, sid)]),
+            description=rr_neighbor_sites[(rfss, sid)].description or None,
+        )
+        for (rfss, sid) in sorted(rr_ids - decoded_ids)
+    ]
 
     return result
 
@@ -178,14 +219,20 @@ def _find_site(sites: Iterable[RRSite], rfss_id: int, site_id: int) -> RRSite | 
     return None
 
 
-def _rr_neighbor_freqs(all_sites: Iterable[RRSite], exclude_site: RRSite) -> set[int]:
-    """All control-channel freqs across the system, minus the current site."""
-    out: set[int] = set()
+def _rr_neighbor_sites(all_sites: Iterable[RRSite],
+                       exclude_site: RRSite) -> dict[tuple[int, int], RRSite]:
+    """All sites in the system keyed by (rfss, site_number), minus current."""
+    out: dict[tuple[int, int], RRSite] = {}
     for s in all_sites:
         if s.site_number == exclude_site.site_number and s.rfss == exclude_site.rfss:
             continue
-        out.update(s.control_freqs_hz())
+        out[(s.rfss, s.site_number)] = s
     return out
+
+
+def _first_control_freq(site: RRSite) -> int | None:
+    freqs = site.control_freqs_hz()
+    return freqs[0] if freqs else None
 
 
 # ---------------------------------------------------------------------------

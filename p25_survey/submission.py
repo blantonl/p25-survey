@@ -9,8 +9,9 @@ file organized as:
   3. New sites (system in RR, but RFSS/Site not yet listed)
   4. New / corrected frequencies (site in RR, decoded freq not listed
      or off by more than 1 kHz)
-  5. New neighbors (site in RR but the neighbors we observed aren't all
-     listed)
+  5. Neighbor differences (sites we observed in ADJ_STS_BCST whose
+     RFSS+Site isn't in RR's roster, plus the inverse direction for
+     admin awareness)
 
 Designed to be pasted into a forum thread or RR support ticket.
 """
@@ -123,7 +124,15 @@ def render(records: list[SurveyRecord],
 
     # --- neighbor diffs
     _wrote_section(out, "## Neighbor differences\n\n"
-                        "Sites where our observed neighbor list differs from RR's.\n\n",
+                        "Sites where the (RFSS, Site) IDs we decoded from "
+                        "ADJ_STS_BCST diverge from the RR roster for the "
+                        "system. Useful as a hint for admins to verify or "
+                        "extend the database; the inverse direction (RR has "
+                        "a site we didn't observe) is informational — "
+                        "ADJ_STS_BCST advertises a configured subset, so "
+                        "missing observations are expected when neighbors "
+                        "aren't physically adjacent or were off-air during "
+                        "the scan.\n\n",
                    lambda b: _write_neighbor_diffs(b, records, enrichments))
 
     if not any([n_new_system, n_new_site, n_freq_mismatch, n_neighbor_diff]):
@@ -226,12 +235,16 @@ def _write_neighbor_diffs(out: StringIO, records: list[SurveyRecord],
                   f"{' — ' + e.rr_site_description if e.rr_site_description else ''}\n\n")
         out.write(f"- Decoded CC: {_fmt_freq_mhz(r.freq_hz)}\n")
         if e.neighbors_decoded_not_in_rr:
-            out.write(f"- **Neighbors we observed but RR doesn't list:**\n")
-            for f in e.neighbors_decoded_not_in_rr:
-                out.write(f"    - {_fmt_freq_mhz(f)}\n")
+            out.write(f"- **Neighbors we observed whose RFSS/Site aren't in "
+                      f"RR's roster (admins: candidates to add):**\n")
+            for n in e.neighbors_decoded_not_in_rr:
+                freq = f", {_fmt_freq_mhz(n.freq_hz)}" if n.freq_hz else ""
+                out.write(f"    - RFSS {n.rfss_id} / Site {n.site_id}{freq}\n")
         if e.neighbors_in_rr_not_decoded:
-            out.write(f"- Neighbors RR lists but we didn't observe (likely out of "
-                      f"range or simulcast off-air at scan time):\n")
-            for f in e.neighbors_in_rr_not_decoded:
-                out.write(f"    - {_fmt_freq_mhz(f)}\n")
+            out.write(f"- RR-roster sites we did not see in ADJ_STS_BCST "
+                      f"(informational — may not actually neighbor this site):\n")
+            for n in e.neighbors_in_rr_not_decoded:
+                freq = f", {_fmt_freq_mhz(n.freq_hz)}" if n.freq_hz else ""
+                desc = f" — {n.description}" if n.description else ""
+                out.write(f"    - RFSS {n.rfss_id} / Site {n.site_id}{freq}{desc}\n")
         out.write("\n")

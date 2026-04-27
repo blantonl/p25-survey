@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from p25_survey.enrich import EnrichmentResult, FreqOffset
+from p25_survey.enrich import EnrichmentResult, FreqOffset, NeighborRef
 from p25_survey.submission import render, render_file
 from p25_survey.survey import IdenUpEntry, NeighborSite, SignalQuality, SurveyRecord
 
@@ -139,12 +139,34 @@ class TestNeighborDiff:
             cc_freq_offset=FreqOffset(decoded_hz=rec.freq_hz, expected_hz=rec.freq_hz,
                                       offset_hz=0, ppm=0.0),
             cc_freq_in_db=True,
-            neighbors_decoded_not_in_rr=[860_500_000],
+            neighbors_decoded_not_in_rr=[
+                NeighborRef(rfss_id=1, site_id=99, freq_hz=860_500_000),
+            ],
         )
         text = render([rec], {rec.freq_hz: enr})
         assert "## Neighbor differences" in text
-        assert "Neighbors we observed but RR doesn't list" in text
+        assert "RFSS 1 / Site 99" in text
         assert "860.50000 MHz" in text
+        assert "candidates to add" in text
+
+    def test_renders_rr_only_neighbor_as_informational(self):
+        rec = _record()
+        enr = EnrichmentResult(
+            system_match=True, site_match=True,
+            rr_system_name="X",
+            cc_freq_offset=FreqOffset(decoded_hz=rec.freq_hz, expected_hz=rec.freq_hz,
+                                      offset_hz=0, ppm=0.0),
+            cc_freq_in_db=True,
+            neighbors_in_rr_not_decoded=[
+                NeighborRef(rfss_id=1, site_id=42, freq_hz=851_606_250,
+                            description="Far Hill"),
+            ],
+        )
+        text = render([rec], {rec.freq_hz: enr})
+        assert "## Neighbor differences" in text
+        assert "RFSS 1 / Site 42" in text
+        assert "Far Hill" in text
+        assert "informational" in text
 
 
 # ---------------------------------------------------------------------------

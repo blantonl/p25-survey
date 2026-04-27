@@ -9,6 +9,7 @@ from __future__ import annotations
 from p25_survey.enrich import (
     BandOffsetSummary,
     EnrichmentResult,
+    NeighborRef,
     enrich_record,
     summarize_band_offsets,
 )
@@ -70,16 +71,28 @@ def _site(rfss: int, site_number: int, freqs_hz: list[int],
     )
 
 
-def _record(freq_hz: int = 851_006_250, neighbors_hz: list[int] | None = None,
+def _record(freq_hz: int = 851_006_250,
+            neighbors: list[NeighborSite] | None = None,
+            neighbors_hz: list[int] | None = None,
             wacn: int | None = 0xBEE00, sysid: int | None = 0x1A4,
             rfss_id: int | None = 1, site_id: int | None = 7) -> SurveyRecord:
+    """Build a SurveyRecord for tests.
+
+    `neighbors` takes explicit NeighborSite objects (preferred). The legacy
+    `neighbors_hz` shortcut still works for the band-offset tests that
+    don't care about neighbor identity — those neighbors all get a stub
+    rfss/site that never matches any real RR fixture.
+    """
+    if neighbors is None:
+        neighbors = [
+            NeighborSite(freq_hz=f, rfss_id=1, site_id=8)
+            for f in (neighbors_hz or [])
+        ]
     return SurveyRecord(
         freq_hz=freq_hz, complete=True,
         wacn=wacn, sysid=sysid, nac=0x293,
         rfss_id=rfss_id, site_id=site_id,
-        neighbors=[
-            NeighborSite(freq_hz=f, rfss_id=1, site_id=8) for f in (neighbors_hz or [])
-        ],
+        neighbors=neighbors,
     )
 
 
@@ -185,28 +198,83 @@ class TestNeighborDiff:
         ]
         client = FakeClient(system=_system(), sites=sites)
         result = enrich_record(
-            _record(neighbors_hz=[851_106_250, 851_206_250]),
+            _record(neighbors=[
+                NeighborSite(freq_hz=851_106_250, rfss_id=1, site_id=8),
+                NeighborSite(freq_hz=851_206_250, rfss_id=1, site_id=9),
+            ]),
             client,
         )
         assert result.neighbors_in_rr_not_decoded == []
         assert result.neighbors_decoded_not_in_rr == []
 
     def test_we_missed_a_neighbor(self):
+        # RR has sites 7/8/9; we're on 7 and decoded only site 8 in
+        # ADJ_STS_BCST. RR roster knows about 9 too, so it shows up as
+        # "in RR, not decoded" — informational, since ADJ_STS_BCST is a
+        # configured subset, not a discovery.
         sites = [
             _site(rfss=1, site_number=7, freqs_hz=[851_006_250]),
             _site(rfss=1, site_number=8, freqs_hz=[851_106_250]),
             _site(rfss=1, site_number=9, freqs_hz=[851_206_250]),
         ]
         client = FakeClient(system=_system(), sites=sites)
-        result = enrich_record(_record(neighbors_hz=[851_106_250]), client)
-        assert result.neighbors_in_rr_not_decoded == [851_206_250]
+        result = enrich_record(
+            _record(neighbors=[
+                NeighborSite(freq_hz=851_106_250, rfss_id=1, site_id=8),
+            ]),
+            client,
+        )
+        assert len(result.neighbors_in_rr_not_decoded) == 1
+        assert result.neighbors_in_rr_not_decoded[0].rfss_id == 1
+        assert result.neighbors_in_rr_not_decoded[0].site_id == 9
+        assert result.neighbors_in_rr_not_decoded[0].freq_hz == 851_206_250
         assert result.neighbors_decoded_not_in_rr == []
 
     def test_we_decoded_an_unknown_neighbor(self):
+        # We saw a neighbor advertising RFSS 1 / Site 99; RR has no such
+        # site in this system. That's a strong "admins should add" hint.
         sites = [_site(rfss=1, site_number=7, freqs_hz=[851_006_250])]
         client = FakeClient(system=_system(), sites=sites)
-        result = enrich_record(_record(neighbors_hz=[860_500_000]), client)
-        assert result.neighbors_decoded_not_in_rr == [860_500_000]
+        result = enrich_record(
+            _record(neighbors=[
+                NeighborSite(freq_hz=860_500_000, rfss_id=1, site_id=99),
+            ]),
+            client,
+        )
+        assert len(result.neighbors_decoded_not_in_rr) == 1
+        nref = result.neighbors_decoded_not_in_rr[0]
+        assert nref.rfss_id == 1
+        assert nref.site_id == 99
+        assert nref.freq_hz == 860_500_000
+        assert result.neighbors_in_rr_not_decoded == []
+
+    def test_voice_freqs_no_longer_flagged(self):
+        # Regression: previously the diff compared frequency sets that
+        # included every channel on every other site (including voice/
+        # data freqs). With ID-based comparison, sites with matching
+        # (rfss, site) produce no diff regardless of how many traffic
+        # freqs RR lists for them.
+        sites = [
+            _site(rfss=1, site_number=7, freqs_hz=[851_006_250]),
+            _site(rfss=1, site_number=8,
+                  freqs_hz=[851_106_250],   # control
+                  alt_freqs_hz=[]),
+        ]
+        # Pad site 8's frequency list with non-control channels (use="").
+        from p25_survey.radioreference import RRSiteFreq
+        sites[1].frequencies.extend([
+            RRSiteFreq(freq_hz=852_000_000, use=""),
+            RRSiteFreq(freq_hz=852_100_000, use=""),
+            RRSiteFreq(freq_hz=852_200_000, use=""),
+        ])
+        client = FakeClient(system=_system(), sites=sites)
+        result = enrich_record(
+            _record(neighbors=[
+                NeighborSite(freq_hz=851_106_250, rfss_id=1, site_id=8),
+            ]),
+            client,
+        )
+        assert result.neighbors_decoded_not_in_rr == []
         assert result.neighbors_in_rr_not_decoded == []
 
 
