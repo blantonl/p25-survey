@@ -111,7 +111,7 @@ Three phases per scan:
 |---|---|
 | `--sdr {rtlsdr,airspy,hackrf}` | Driver. Autoprobed if omitted. |
 | `--device-args ARGS` | Raw gr-osmosdr device args (e.g. `airspy=0,LNA=10,MIX=15,IF=12`). Lets you set per-stage gain or other driver-specific options. |
-| `--gain dB` | Sets the SDR's default gain stage (Airspy `linearity`, RTL-SDR tuner, HackRF IF/VGA). Omit for AGC. Use `--list-gains` to see the available range. |
+| `--gain dB` | Sets the SDR's default gain stage (Airspy `linearity` preset 0–21, RTL-SDR tuner, HackRF IF/VGA). Omit for AGC. Use `--list-gains` to see the available range. For Airspy, see [`docs/airspy-gain-tables.md`](docs/airspy-gain-tables.md) for the full preset → LNA/MIX/IF lookup tables and per-stage control via `--device-args`. |
 | `--ppm PPM` | Frequency correction in PPM. |
 | `--list-gains` | Probe the SDR and print available gain stages, then exit. |
 
@@ -231,6 +231,7 @@ disk (per-record fsync). Resume with `--resume`:
 - [`DECISIONS.md`](DECISIONS.md) — every architectural choice with rationale.
 - [`PLAN.md`](PLAN.md) — module layout, algorithms, milestones.
 - [`docs/schema.md`](docs/schema.md) — NDJSON survey record schema.
+- [`docs/airspy-gain-tables.md`](docs/airspy-gain-tables.md) — Airspy linearity/sensitivity preset → LNA/MIX/IF lookup tables, snapshot from libairspy.
 
 ## License
 
