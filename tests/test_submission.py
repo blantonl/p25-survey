@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from p25_survey.enrich import EnrichmentResult, FreqOffset, NeighborRef
+from p25_survey.enrich import (
+    EnrichmentResult,
+    FreqOffset,
+    NeighborCCMismatch,
+    NeighborRef,
+)
 from p25_survey.submission import render, render_file
 from p25_survey.survey import IdenUpEntry, NeighborSite, SignalQuality, SurveyRecord
 
@@ -130,7 +135,7 @@ class TestFreqMismatch:
 # ---------------------------------------------------------------------------
 
 
-class TestNeighborDiff:
+class TestNewSiteCandidates:
     def test_renders_extra_decoded_neighbor(self):
         rec = _record(neighbors_hz=[851_106_250, 860_500_000])
         enr = EnrichmentResult(
@@ -140,16 +145,17 @@ class TestNeighborDiff:
                                       offset_hz=0, ppm=0.0),
             cc_freq_in_db=True,
             neighbors_decoded_not_in_rr=[
-                NeighborRef(rfss_id=1, site_id=99, freq_hz=860_500_000),
+                NeighborRef(rfss_id=1, site_id=99, freq_hz=860_500_000, in_rr=False),
             ],
         )
         text = render([rec], {rec.freq_hz: enr})
-        assert "## Neighbor differences" in text
+        assert "## New-site neighbor candidates" in text
         assert "RFSS 1 / Site 99" in text
         assert "860.50000 MHz" in text
-        assert "candidates to add" in text
 
-    def test_renders_rr_only_neighbor_as_informational(self):
+
+class TestNeighborCCMismatchSection:
+    def test_renders_missing_from_rr(self):
         rec = _record()
         enr = EnrichmentResult(
             system_match=True, site_match=True,
@@ -157,16 +163,63 @@ class TestNeighborDiff:
             cc_freq_offset=FreqOffset(decoded_hz=rec.freq_hz, expected_hz=rec.freq_hz,
                                       offset_hz=0, ppm=0.0),
             cc_freq_in_db=True,
-            neighbors_in_rr_not_decoded=[
-                NeighborRef(rfss_id=1, site_id=42, freq_hz=851_606_250,
-                            description="Far Hill"),
+            neighbor_cc_mismatches=[
+                NeighborCCMismatch(
+                    rfss_id=1, site_id=8, advertised_cc_hz=851_300_000,
+                    kind="missing_from_rr", rr_site_description="Hilltop",
+                ),
             ],
         )
         text = render([rec], {rec.freq_hz: enr})
-        assert "## Neighbor differences" in text
-        assert "RFSS 1 / Site 42" in text
-        assert "Far Hill" in text
-        assert "informational" in text
+        assert "## Neighbor control-channel mismatches" in text
+        assert "RFSS 1 / Site 8" in text
+        assert "Hilltop" in text
+        assert "851.30000 MHz" in text
+        assert "not in the site's RR frequency list" in text
+
+    def test_renders_not_marked_control(self):
+        rec = _record()
+        enr = EnrichmentResult(
+            system_match=True, site_match=True,
+            rr_system_name="X",
+            cc_freq_offset=FreqOffset(decoded_hz=rec.freq_hz, expected_hz=rec.freq_hz,
+                                      offset_hz=0, ppm=0.0),
+            cc_freq_in_db=True,
+            neighbor_cc_mismatches=[
+                NeighborCCMismatch(
+                    rfss_id=1, site_id=8, advertised_cc_hz=851_106_250,
+                    kind="not_marked_control", rr_use_code="",
+                ),
+            ],
+        )
+        text = render([rec], {rec.freq_hz: enr})
+        assert "## Neighbor control-channel mismatches" in text
+        assert "should be \"d\" or \"a\"" in text
+
+
+class TestObservedNeighborSection:
+    def test_lists_observed_neighbors_with_rr_context(self):
+        rec = _record()
+        enr = EnrichmentResult(
+            system_match=True, site_match=True,
+            rr_system_name="X",
+            cc_freq_offset=FreqOffset(decoded_hz=rec.freq_hz, expected_hz=rec.freq_hz,
+                                      offset_hz=0, ppm=0.0),
+            cc_freq_in_db=True,
+            observed_neighbors=[
+                NeighborRef(rfss_id=1, site_id=8, freq_hz=851_106_250, in_rr=True,
+                            description="Hilltop", location="Anytown",
+                            county="County A"),
+                NeighborRef(rfss_id=1, site_id=99, freq_hz=860_500_000, in_rr=False),
+            ],
+        )
+        text = render([rec], {rec.freq_hz: enr})
+        assert "## Observed neighbor roster" in text
+        assert "Hilltop" in text
+        assert "Anytown" in text
+        assert "County A" in text
+        assert "RFSS 1 / Site 99" in text
+        assert "not in RR roster" in text
 
 
 # ---------------------------------------------------------------------------
@@ -193,9 +246,11 @@ class TestBandSummary:
             cc_freq_in_db=True,
         )
         text = render([rec1, rec2], {rec1.freq_hz: e1, rec2.freq_hz: e2})
-        assert "SDR frequency offsets observed" in text
+        assert "## SDR clock calibration" in text
         assert "800 MHz" in text
         assert "700 MHz" in text
+        # 2 sites is below the recommendation threshold
+        assert "Not enough matched sites" in text
 
 
 # ---------------------------------------------------------------------------

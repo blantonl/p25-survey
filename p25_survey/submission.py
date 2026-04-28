@@ -9,9 +9,12 @@ file organized as:
   3. New sites (system in RR, but RFSS/Site not yet listed)
   4. New / corrected frequencies (site in RR, decoded freq not listed
      or off by more than 1 kHz)
-  5. Neighbor differences (sites we observed in ADJ_STS_BCST whose
-     RFSS+Site isn't in RR's roster, plus the inverse direction for
-     admin awareness)
+  5. New-site neighbor candidates (sites we observed in ADJ_STS_BCST
+     whose (RFSS, Site) ID isn't in RR's roster)
+  6. Neighbor CC mismatches (advertised neighbor CC freq either
+     missing from RR or not flagged as a control channel)
+  7. Observed neighbor roster (per-site enumeration of ADJ_STS_BCST
+     neighbors with their RR site descriptions for spot-checking)
 
 Designed to be pasted into a forum thread or RR support ticket.
 """
@@ -24,6 +27,7 @@ from typing import Iterable
 from p25_survey.enrich import (
     BandOffsetSummary,
     EnrichmentResult,
+    recommend_ppm,
     summarize_band_offsets,
 )
 from p25_survey.survey import SurveyRecord
@@ -75,11 +79,15 @@ def render(records: list[SurveyRecord],
         1 for r in records
         if (e := enrichments.get(r.freq_hz)) and e.site_match and not e.cc_freq_in_db
     )
-    n_neighbor_diff = sum(
+    n_neighbor_new = sum(
         1 for r in records
         if (e := enrichments.get(r.freq_hz))
-        and e.site_match
-        and (e.neighbors_in_rr_not_decoded or e.neighbors_decoded_not_in_rr)
+        and e.site_match and e.neighbors_decoded_not_in_rr
+    )
+    n_neighbor_cc_miss = sum(
+        1 for r in records
+        if (e := enrichments.get(r.freq_hz))
+        and e.site_match and e.neighbor_cc_mismatches
     )
 
     out.write("## Summary\n\n")
@@ -88,15 +96,28 @@ def render(records: list[SurveyRecord],
     out.write(f"- New systems candidates: **{n_new_system}**\n")
     out.write(f"- New sites candidates: **{n_new_site}**\n")
     out.write(f"- Frequency mismatches: **{n_freq_mismatch}**\n")
-    out.write(f"- Sites with neighbor diffs: **{n_neighbor_diff}**\n\n")
+    out.write(f"- Sites with new-site neighbor candidates: **{n_neighbor_new}**\n")
+    out.write(f"- Sites with neighbor CC mismatches: **{n_neighbor_cc_miss}**\n\n")
 
-    # --- per-band ppm
+    # --- ppm recommendation + per-band table
     band_offsets = summarize_band_offsets(records, enrichments)
     if band_offsets:
-        out.write("## SDR frequency offsets observed (per band)\n\n")
-        out.write("Use these to calibrate the SDR's `--ppm`. A consistent non-zero "
-                  "value across multiple sites in one band suggests SDR clock error "
-                  "rather than RR-database error.\n\n")
+        rec = recommend_ppm(records, enrichments)
+        out.write("## SDR clock calibration\n\n")
+        if rec.consistency == "insufficient_data":
+            out.write(f"Not enough matched sites ({rec.n_samples}) for a reliable "
+                      f"`--ppm` recommendation; need at least 3.\n\n")
+        else:
+            out.write(f"**Recommended `--ppm {rec.median_ppm:+.2f}`** — median "
+                      f"across {rec.n_samples} matched sites, IQR "
+                      f"{rec.iqr_ppm:.2f} ppm, consistency: **{rec.consistency}**. "
+                      f"Single-oscillator SDRs (RTL-SDR, Airspy, HackRF) take one "
+                      f"global value; pass it as `--ppm <value>` on the next run.\n\n")
+            if rec.cross_band_warning:
+                out.write(f"> ⚠ {rec.cross_band_warning}\n\n")
+        out.write("Per-band breakdown (diagnostic — a consistent non-zero value "
+                  "across multiple sites in one band suggests SDR clock error rather "
+                  "than RR-database error):\n\n")
         out.write("| Band | Sites matched | Mean offset | Mean ppm | Median ppm |\n")
         out.write("|---|---:|---:|---:|---:|\n")
         for s in band_offsets:
@@ -122,20 +143,32 @@ def render(records: list[SurveyRecord],
                         "a site reconfiguration RR hasn't picked up.\n\n",
                    lambda b: _write_freq_mismatches(b, records, enrichments))
 
-    # --- neighbor diffs
-    _wrote_section(out, "## Neighbor differences\n\n"
-                        "Sites where the (RFSS, Site) IDs we decoded from "
-                        "ADJ_STS_BCST diverge from the RR roster for the "
-                        "system. Useful as a hint for admins to verify or "
-                        "extend the database; the inverse direction (RR has "
-                        "a site we didn't observe) is informational — "
-                        "ADJ_STS_BCST advertises a configured subset, so "
-                        "missing observations are expected when neighbors "
-                        "aren't physically adjacent or were off-air during "
-                        "the scan.\n\n",
-                   lambda b: _write_neighbor_diffs(b, records, enrichments))
+    # --- new-site neighbor candidates
+    _wrote_section(out, "## New-site neighbor candidates\n\n"
+                        "ADJ_STS_BCST neighbors whose (RFSS, Site) ID doesn't "
+                        "resolve to any site in the RR roster for this system. "
+                        "Strong candidates for admins to add.\n\n",
+                   lambda b: _write_new_site_candidates(b, records, enrichments))
 
-    if not any([n_new_system, n_new_site, n_freq_mismatch, n_neighbor_diff]):
+    # --- neighbor CC mismatches
+    _wrote_section(out, "## Neighbor control-channel mismatches\n\n"
+                        "Each row is an ADJ_STS_BCST neighbor whose advertised CC "
+                        "frequency either isn't in the neighbor site's RR frequency "
+                        "list at all, or is listed but not flagged as a control "
+                        "channel (use code \"d\"/\"a\"). Both surface RR data gaps "
+                        "rather than site-roster gaps.\n\n",
+                   lambda b: _write_neighbor_cc_mismatches(b, records, enrichments))
+
+    # --- observed neighbor roster (informational)
+    _wrote_section(out, "## Observed neighbor roster\n\n"
+                        "ADJ_STS_BCST neighbors actually observed at each site, "
+                        "annotated with their RR site description/location. "
+                        "Useful for admins to spot-check whether per-neighbor "
+                        "site text is current.\n\n",
+                   lambda b: _write_observed_neighbors(b, records, enrichments))
+
+    if not any([n_new_system, n_new_site, n_freq_mismatch,
+                n_neighbor_new, n_neighbor_cc_miss]):
         out.write("## (Nothing to submit)\n\n"
                   "All decoded systems matched RadioReference cleanly. No submissions needed.\n")
 
@@ -223,28 +256,63 @@ def _write_freq_mismatches(out: StringIO, records: list[SurveyRecord],
                   f"{_hex(r.sysid, 3)} / {_hex(r.nac, 3)}\n\n")
 
 
-def _write_neighbor_diffs(out: StringIO, records: list[SurveyRecord],
-                          enrichments: dict[int, EnrichmentResult]) -> None:
+def _site_header(r: SurveyRecord, e: EnrichmentResult) -> str:
+    desc = f" — {e.rr_site_description}" if e.rr_site_description else ""
+    return f"### {e.rr_system_name}: RFSS {r.rfss_id} / Site {r.site_id}{desc}\n\n"
+
+
+def _write_new_site_candidates(out: StringIO, records: list[SurveyRecord],
+                               enrichments: dict[int, EnrichmentResult]) -> None:
     for r in sorted(records, key=lambda x: x.freq_hz):
         e = enrichments.get(r.freq_hz)
-        if e is None or not e.site_match:
+        if e is None or not e.site_match or not e.neighbors_decoded_not_in_rr:
             continue
-        if not e.neighbors_in_rr_not_decoded and not e.neighbors_decoded_not_in_rr:
-            continue
-        out.write(f"### {e.rr_system_name}: RFSS {r.rfss_id} / Site {r.site_id}"
-                  f"{' — ' + e.rr_site_description if e.rr_site_description else ''}\n\n")
+        out.write(_site_header(r, e))
         out.write(f"- Decoded CC: {_fmt_freq_mhz(r.freq_hz)}\n")
-        if e.neighbors_decoded_not_in_rr:
-            out.write(f"- **Neighbors we observed whose RFSS/Site aren't in "
-                      f"RR's roster (admins: candidates to add):**\n")
-            for n in e.neighbors_decoded_not_in_rr:
-                freq = f", {_fmt_freq_mhz(n.freq_hz)}" if n.freq_hz else ""
-                out.write(f"    - RFSS {n.rfss_id} / Site {n.site_id}{freq}\n")
-        if e.neighbors_in_rr_not_decoded:
-            out.write(f"- RR-roster sites we did not see in ADJ_STS_BCST "
-                      f"(informational — may not actually neighbor this site):\n")
-            for n in e.neighbors_in_rr_not_decoded:
-                freq = f", {_fmt_freq_mhz(n.freq_hz)}" if n.freq_hz else ""
-                desc = f" — {n.description}" if n.description else ""
-                out.write(f"    - RFSS {n.rfss_id} / Site {n.site_id}{freq}{desc}\n")
+        out.write(f"- New-site candidates from ADJ_STS_BCST:\n")
+        for n in e.neighbors_decoded_not_in_rr:
+            freq = f", {_fmt_freq_mhz(n.freq_hz)}" if n.freq_hz else ""
+            out.write(f"    - RFSS {n.rfss_id} / Site {n.site_id}{freq}\n")
+        out.write("\n")
+
+
+def _write_neighbor_cc_mismatches(out: StringIO, records: list[SurveyRecord],
+                                  enrichments: dict[int, EnrichmentResult]) -> None:
+    for r in sorted(records, key=lambda x: x.freq_hz):
+        e = enrichments.get(r.freq_hz)
+        if e is None or not e.site_match or not e.neighbor_cc_mismatches:
+            continue
+        out.write(_site_header(r, e))
+        out.write(f"- Decoded CC: {_fmt_freq_mhz(r.freq_hz)}\n")
+        for m in e.neighbor_cc_mismatches:
+            who = f"RFSS {m.rfss_id} / Site {m.site_id}"
+            if m.rr_site_description:
+                who += f" — {m.rr_site_description}"
+            advertised = _fmt_freq_mhz(m.advertised_cc_hz)
+            if m.kind == "missing_from_rr":
+                out.write(f"    - {who}: advertised CC **{advertised}** is "
+                          f"not in the site's RR frequency list\n")
+            elif m.kind == "not_marked_control":
+                use = m.rr_use_code or "(blank)"
+                out.write(f"    - {who}: advertised CC **{advertised}** is "
+                          f"listed but `use=\"{use}\"` (should be \"d\" or \"a\")\n")
+        out.write("\n")
+
+
+def _write_observed_neighbors(out: StringIO, records: list[SurveyRecord],
+                              enrichments: dict[int, EnrichmentResult]) -> None:
+    for r in sorted(records, key=lambda x: x.freq_hz):
+        e = enrichments.get(r.freq_hz)
+        if e is None or not e.site_match or not e.observed_neighbors:
+            continue
+        out.write(_site_header(r, e))
+        for n in e.observed_neighbors:
+            freq = _fmt_freq_mhz(n.freq_hz) if n.freq_hz else "(no CC)"
+            id_part = f"RFSS {n.rfss_id} / Site {n.site_id}"
+            if n.in_rr:
+                bits = [b for b in (n.description, n.location, n.county) if b]
+                desc = f" — {' / '.join(bits)}" if bits else ""
+                out.write(f"- {id_part}, {freq}{desc}\n")
+            else:
+                out.write(f"- {id_part}, {freq} — *not in RR roster (new-site candidate)*\n")
         out.write("\n")

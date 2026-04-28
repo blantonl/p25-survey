@@ -386,17 +386,29 @@ def _run_scan(cfg: SurveyConfig) -> int:
 
     # ----- post-scan: per-band offsets + submission report -----
     if rr_client is not None and enrichments:
-        from p25_survey.enrich import summarize_band_offsets
+        from p25_survey.enrich import recommend_ppm, summarize_band_offsets
         from p25_survey.submission import render_file as render_submission
 
         offsets = summarize_band_offsets(all_records, enrichments)
         if offsets:
             print()
-            print("RadioReference frequency offsets per band (use to calibrate --ppm):")
+            print("RadioReference frequency offsets per band:")
             print(f"  {'Band':<55} {'N':>3} {'Mean ppm':>10} {'Median':>8}")
             for s in offsets:
                 print(f"  {s.band_name:<55} {s.n_samples:>3} "
                       f"{s.mean_ppm:>+10.3f} {s.median_ppm:>+8.3f}")
+
+        rec = recommend_ppm(all_records, enrichments)
+        print()
+        if rec.consistency == "insufficient_data":
+            print(f"--ppm recommendation: need at least 3 matched sites "
+                  f"(got {rec.n_samples}) for a reliable suggestion.")
+        else:
+            print(f"Recommended --ppm: {rec.median_ppm:+.2f}  "
+                  f"(median across {rec.n_samples} sites; IQR {rec.iqr_ppm:.2f} ppm; "
+                  f"consistency: {rec.consistency})")
+            if rec.cross_band_warning:
+                print(f"  Warning: {rec.cross_band_warning}")
 
         sub_path = os.path.splitext(cfg.output_path)[0] + "-submissions.md"
         render_submission(all_records, enrichments, sub_path)

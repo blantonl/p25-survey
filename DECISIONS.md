@@ -314,6 +314,44 @@ either way.
 
 ---
 
+## 2026-04-28 — op25 FEC stats: migrate from custom binding to JSON `control()`
+
+**Decision:** Plan to retire our custom `frame_assembler.get_decode_stats()` pybind11 binding (added 2026-04-25 above) once boatbod's op25 fork lands the JSON-`control()` interface he proposed in the FEC-stats PR thread. Replace the direct `fa.get_decode_stats()` call with `json.loads(fa.control('{"cmd":"fec_stats"}'))` and parse the agreed JSON envelope.
+
+**Why:** Boatbod's feedback on our FEC-stats PR was that pybind11 surface area is fragile and compiler-version-sensitive across his fork's user base. He proposed consolidating per-feature C++ glue behind a single `virtual std::string control(const std::string& args)` method that takes/returns JSON. We agreed to:
+1. Drop the pybind11 additions from our PR.
+2. Have him land a base-class signature change first (`void control(const std::string&)` → `std::string control(const std::string&)`, mechanical fork-wide refactor).
+3. Re-cut the FEC-stats PR on top, dispatching `{"cmd":"fec_stats"}` through `control()` and returning a JSON envelope.
+
+The maintainer chose option 2 (return-by-value) over option 1 (out-param) — RVO + move semantics make it zero-cost, and the binding-side handling is symmetric.
+
+**Agreed JSON envelope shape:**
+```json
+{
+  "cmd": "fec_stats",
+  "schema": 1,
+  "data": {
+    "voice":   {"frames_total": ..., "golay_corrected": ..., "rs_corrected": ..., "rs_unrecoverable": ...},
+    "control": {"tsbk_attempted": ..., "tsbk_crc_passed": ..., "trellis_corrected": ...},
+    "sync":    {"losses": ..., "acquisitions": ...}
+  }
+}
+```
+
+Two design choices that matter for our migration cadence:
+- **Raw counters, not pre-computed rates.** Op25 doesn't take a position on smoothing windows; consumers compute BER themselves. Lets each op25 release evolve without redefining "BER".
+- **`schema` field in the envelope.** Lets us branch on schema version for forward compatibility instead of sniffing op25 build strings (boatbod doesn't tag releases reliably).
+
+**Impact on this repo:**
+- *Existing* code keeps working unchanged through PR 1 (signature swap) — we don't call `control()` from Python anywhere.
+- One-line swap in `decoder.py` (around the current `fa.get_decode_stats()` call) once PR 2 lands. Map JSON counters to `state.tsbk_attempted` / `state.tsbk_passed` at the boundary; the public `SignalQuality` schema doesn't change.
+- Add a try/except wrapper that prefers `control()` and falls back to `get_decode_stats()` for one or two releases — boatbod's fork doesn't tag, and we've been telling users to follow main, so we'll have both shapes in the wild for a while.
+- README's pinned op25 commit moves forward once the new interface is the recommended target.
+
+**Follow-up (not yet done):** The voice-FEC counters in the new envelope (`golay_corrected`, `rs_unrecoverable`) give us *real* post-FEC residual error data. Today's `ber_pct_mean` in `decoder.py` is a CRC-pass-rate proxy on TSBK blocks (control-channel only). After PR 2, we can compute proper symbol-level BER from voice frames and surface "voice FEC marginal" as a distinct flag, while keeping the CRC proxy as a fallback for control-only dwells with no voice traffic.
+
+---
+
 ## Open questions / deferred decisions
 
 These will be resolved as implementation forces the issue. Listed here so we don't forget:

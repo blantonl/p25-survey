@@ -6,8 +6,13 @@ Given a decoded `SurveyRecord` and an `RRClient`, produce an
   - whether the RFSS/Site is in RR
   - whether the decoded CC frequency matches one listed for the site
   - the absolute and ppm offset between decoded and listed frequency
-  - which neighbors we found whose (RFSS, Site) aren't listed for the
-    system in RR (and vice versa, for admin-update visibility)
+  - the observed ADJ_STS_BCST neighbors annotated with RR site data,
+    so admins can spot-check the per-neighbor description/text
+  - which observed neighbors have (RFSS, Site) IDs that don't resolve
+    in the RR roster (new-site submission candidates)
+  - per-neighbor CC verification: whether the advertised CC frequency
+    is listed for that neighbor's RR site, and whether it's flagged
+    as a control channel (use code "d" or "a")
 
 The result is attached to `SurveyRecord.rr` (a new optional field). The
 output stages — text report, submission report, console summary — read
@@ -47,14 +52,38 @@ class FreqOffset:
 class NeighborRef:
     """Reference to a neighbor site by (rfss, site) identity.
 
-    Used by the diff fields below — comparison is keyed on the IDs, but we
-    carry along whatever frequency / description we know so the report can
-    render something more useful than bare numbers.
+    Carries along whatever frequency / RR site context we know so the
+    report can render something more useful than bare numbers. `in_rr`
+    distinguishes neighbors that match an RR site from new-site
+    candidates (which never have description/location).
     """
     rfss_id: int
     site_id: int
-    freq_hz: int | None = None        # decoded CC (decoded side) or RR-listed CC (RR side)
-    description: str | None = None    # RR site description, when known
+    freq_hz: int | None = None        # advertised CC from ADJ_STS_BCST
+    in_rr: bool = False
+    description: str | None = None    # RR site description, when in_rr
+    location: str | None = None       # RR site location, when in_rr
+    county: str | None = None         # RR site county, when in_rr
+
+
+@dataclass
+class NeighborCCMismatch:
+    """An ADJ_STS_BCST neighbor whose advertised CC freq doesn't line up
+    with the RR-listed frequencies for that site.
+
+    Two failure modes:
+      - kind="missing_from_rr": advertised freq isn't in the site's RR
+        frequency list at all (within 1 kHz tolerance) → freq needs to
+        be added to RR
+      - kind="not_marked_control": freq is listed but its `use` code
+        isn't "d"/"a" → use-code is wrong in RR
+    """
+    rfss_id: int
+    site_id: int
+    advertised_cc_hz: int
+    kind: str                              # "missing_from_rr" | "not_marked_control"
+    rr_use_code: str | None = None         # populated when kind="not_marked_control"
+    rr_site_description: str | None = None
 
 
 @dataclass
@@ -85,15 +114,21 @@ class EnrichmentResult:
     cc_freq_offset: FreqOffset | None = None
     cc_freq_in_db: bool = False              # decoded freq matches some listed CC
 
-    # Neighbor diff (only when site_match=True). Keyed on (rfss_id, site_id)
-    # — comparing frequencies is wrong because ADJ_STS_BCST advertises a
-    # subset of system sites, and even within that subset RR's per-site
-    # frequency list includes voice/data channels we'd never observe in
-    # ADJ_STS_BCST. The reference set here is "all other sites in the RR
-    # system roster", which is a useful "candidates RR admins might update"
-    # signal but is broader than the actual neighbor relationship.
+    # All neighbors observed in ADJ_STS_BCST, annotated with RR data when
+    # we matched them to the system roster. Useful for admins eyeballing
+    # whether per-neighbor descriptions need updating. Only populated on
+    # site_match=True.
+    observed_neighbors: list[NeighborRef] = field(default_factory=list)
+
+    # Subset of observed_neighbors with `in_rr=False` — the
+    # high-signal "new site" submission candidates.
     neighbors_decoded_not_in_rr: list[NeighborRef] = field(default_factory=list)
-    neighbors_in_rr_not_decoded: list[NeighborRef] = field(default_factory=list)
+
+    # Per-neighbor CC verification (only when site_match=True). For each
+    # observed neighbor that resolved to an RR site, we check whether the
+    # advertised CC frequency is listed and flagged as control. Misses
+    # become entries here.
+    neighbor_cc_mismatches: list[NeighborCCMismatch] = field(default_factory=list)
 
     # Free-form
     notes: list[str] = field(default_factory=list)
@@ -177,34 +212,69 @@ def enrich_record(record: SurveyRecord, client: RRClient) -> EnrichmentResult:
         )
         result.cc_freq_in_db = abs(offset) < 1000  # within 1 kHz = same channel
 
-    # Neighbor comparison: compare by (rfss, site) identity, not frequency.
-    # ADJ_STS_BCST gives us per-neighbor RFSS+Site IDs directly; RR sites
-    # also carry rfss + site_number. Frequency-based comparison was wrong
-    # both because ADJ_STS_BCST ≠ system roster and because RR's per-site
-    # frequency list includes voice/data channels.
+    # Neighbor cross-reference. ADJ_STS_BCST gives us a small adjacency
+    # list with per-neighbor (RFSS, Site) IDs and an advertised CC freq;
+    # we annotate each entry with the RR site (when found) for
+    # admin-verification, flag IDs not in RR as new-site candidates, and
+    # cross-check the advertised CC against the RR frequency list.
     rr_neighbor_sites = _rr_neighbor_sites(sites, exclude_site=site)
-    decoded_by_id = {(n.rfss_id, n.site_id): n for n in record.neighbors}
 
-    decoded_ids = set(decoded_by_id.keys())
-    rr_ids = set(rr_neighbor_sites.keys())
+    for n in sorted(record.neighbors, key=lambda x: (x.rfss_id, x.site_id)):
+        rr_site = rr_neighbor_sites.get((n.rfss_id, n.site_id))
+        if rr_site is None:
+            ref = NeighborRef(
+                rfss_id=n.rfss_id, site_id=n.site_id,
+                freq_hz=n.freq_hz, in_rr=False,
+            )
+            result.observed_neighbors.append(ref)
+            result.neighbors_decoded_not_in_rr.append(ref)
+            continue
 
-    result.neighbors_decoded_not_in_rr = [
-        NeighborRef(
-            rfss_id=rfss, site_id=sid,
-            freq_hz=decoded_by_id[(rfss, sid)].freq_hz,
-        )
-        for (rfss, sid) in sorted(decoded_ids - rr_ids)
-    ]
-    result.neighbors_in_rr_not_decoded = [
-        NeighborRef(
-            rfss_id=rfss, site_id=sid,
-            freq_hz=_first_control_freq(rr_neighbor_sites[(rfss, sid)]),
-            description=rr_neighbor_sites[(rfss, sid)].description or None,
-        )
-        for (rfss, sid) in sorted(rr_ids - decoded_ids)
-    ]
+        result.observed_neighbors.append(NeighborRef(
+            rfss_id=n.rfss_id, site_id=n.site_id,
+            freq_hz=n.freq_hz, in_rr=True,
+            description=rr_site.description or None,
+            location=rr_site.location or None,
+            county=rr_site.county or None,
+        ))
+
+        mismatch = _check_neighbor_cc(n, rr_site)
+        if mismatch is not None:
+            result.neighbor_cc_mismatches.append(mismatch)
 
     return result
+
+
+def _check_neighbor_cc(neighbor: NeighborSite,
+                       rr_site: RRSite) -> NeighborCCMismatch | None:
+    """Verify the advertised CC frequency against the neighbor's RR site.
+
+    Returns None if the advertised freq is listed AND flagged as control,
+    otherwise a NeighborCCMismatch describing the gap.
+    """
+    if not rr_site.frequencies:
+        # No frequency data at all — treat as missing from RR.
+        return NeighborCCMismatch(
+            rfss_id=neighbor.rfss_id, site_id=neighbor.site_id,
+            advertised_cc_hz=neighbor.freq_hz, kind="missing_from_rr",
+            rr_site_description=rr_site.description or None,
+        )
+
+    closest = min(rr_site.frequencies, key=lambda f: abs(f.freq_hz - neighbor.freq_hz))
+    if abs(closest.freq_hz - neighbor.freq_hz) >= 1000:  # >1 kHz away = different channel
+        return NeighborCCMismatch(
+            rfss_id=neighbor.rfss_id, site_id=neighbor.site_id,
+            advertised_cc_hz=neighbor.freq_hz, kind="missing_from_rr",
+            rr_site_description=rr_site.description or None,
+        )
+    if not closest.is_control:
+        return NeighborCCMismatch(
+            rfss_id=neighbor.rfss_id, site_id=neighbor.site_id,
+            advertised_cc_hz=neighbor.freq_hz, kind="not_marked_control",
+            rr_use_code=closest.use or "",
+            rr_site_description=rr_site.description or None,
+        )
+    return None
 
 
 def _find_site(sites: Iterable[RRSite], rfss_id: int, site_id: int) -> RRSite | None:
@@ -230,11 +300,6 @@ def _rr_neighbor_sites(all_sites: Iterable[RRSite],
     return out
 
 
-def _first_control_freq(site: RRSite) -> int | None:
-    freqs = site.control_freqs_hz()
-    return freqs[0] if freqs else None
-
-
 # ---------------------------------------------------------------------------
 # Per-band offset summary
 # ---------------------------------------------------------------------------
@@ -247,6 +312,27 @@ class BandOffsetSummary:
     mean_ppm: float
     median_ppm: float
     mean_offset_hz: int
+
+
+@dataclass
+class PpmRecommendation:
+    """Single recommended `--ppm` value derived from all matched sites.
+
+    Aggregates across bands (not within) on the assumption that the SDR
+    has a single oscillator — true for every supported driver
+    (RTL-SDR, Airspy, HackRF). The per-band breakdown remains useful
+    as a diagnostic; this is the actionable number for `--ppm`.
+    """
+    n_samples: int
+    median_ppm: float | None              # None when n_samples < MIN_SAMPLES
+    iqr_ppm: float | None                 # interquartile range; None when n_samples < MIN_SAMPLES
+    consistency: str                      # "high" | "medium" | "low" | "insufficient_data"
+    cross_band_warning: str | None = None # set when per-band medians diverge
+
+
+# Minimum number of matched sites before we'll recommend a value at all.
+# Below this, the median is too easily skewed by a single bad site.
+_PPM_MIN_SAMPLES = 3
 
 
 def summarize_band_offsets(records: Iterable[SurveyRecord],
@@ -281,3 +367,79 @@ def summarize_band_offsets(records: Iterable[SurveyRecord],
             mean_offset_hz=int(round(sum(hzs) / n)),
         ))
     return out
+
+
+def _percentile(sorted_values: list[float], pct: float) -> float:
+    """Linear-interpolated percentile on a pre-sorted list."""
+    if not sorted_values:
+        return 0.0
+    if len(sorted_values) == 1:
+        return sorted_values[0]
+    k = (len(sorted_values) - 1) * pct
+    lo = int(k)
+    hi = min(lo + 1, len(sorted_values) - 1)
+    return sorted_values[lo] + (sorted_values[hi] - sorted_values[lo]) * (k - lo)
+
+
+def recommend_ppm(records: Iterable[SurveyRecord],
+                  enrichments: dict[int, EnrichmentResult]
+                  ) -> PpmRecommendation:
+    """Single `--ppm` recommendation across all matched sites.
+
+    Median of every per-site ppm offset (one per matched site). Median
+    is robust to one bad site dragging the average. IQR drives a
+    consistency rating so the user knows whether to trust it.
+
+    Cross-band sanity check: if multiple bands each have ≥2 samples and
+    their medians span more than 0.5 ppm, attach a warning — that's
+    suspicious for a single-TCXO dongle and could mean one band has a
+    site with a real RR-database error skewing things.
+    """
+    by_band: dict[str, list[float]] = defaultdict(list)
+    for rec in records:
+        e = enrichments.get(rec.freq_hz)
+        if e is None or not e.cc_freq_offset:
+            continue
+        band = find_band(rec.freq_hz)
+        band_name = band.name if band else "unknown"
+        by_band[band_name].append(e.cc_freq_offset.ppm)
+
+    all_ppms = sorted(p for ppms in by_band.values() for p in ppms)
+    n = len(all_ppms)
+    if n < _PPM_MIN_SAMPLES:
+        return PpmRecommendation(
+            n_samples=n, median_ppm=None, iqr_ppm=None,
+            consistency="insufficient_data",
+        )
+
+    median = _percentile(all_ppms, 0.5)
+    iqr = _percentile(all_ppms, 0.75) - _percentile(all_ppms, 0.25)
+    if iqr < 0.2:
+        consistency = "high"
+    elif iqr < 0.5:
+        consistency = "medium"
+    else:
+        consistency = "low"
+
+    warning: str | None = None
+    multi_band = [(name, ppms) for name, ppms in by_band.items() if len(ppms) >= 2]
+    if len(multi_band) >= 2:
+        band_medians = {name: _percentile(sorted(ppms), 0.5) for name, ppms in multi_band}
+        spread = max(band_medians.values()) - min(band_medians.values())
+        if spread > 0.5:
+            hi = max(band_medians, key=band_medians.get)
+            lo = min(band_medians, key=band_medians.get)
+            warning = (
+                f"per-band medians diverge by {spread:.2f} ppm "
+                f"({lo}: {band_medians[lo]:+.2f}, {hi}: {band_medians[hi]:+.2f}); "
+                f"unusual for a single-oscillator SDR — check whether one band has a "
+                f"site with a stale RR frequency"
+            )
+
+    return PpmRecommendation(
+        n_samples=n,
+        median_ppm=round(median, 3),
+        iqr_ppm=round(iqr, 3),
+        consistency=consistency,
+        cross_band_warning=warning,
+    )

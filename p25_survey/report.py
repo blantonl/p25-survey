@@ -70,11 +70,11 @@ def _fmt_rr(record: SurveyRecord) -> str:
             parts.append(f"FREQ MISMATCH: RR={cc['expected_hz'] / 1e6:.5f} MHz, "
                          f"offset {sign}{offset_hz} Hz")
     n_extra = len(rr.get("neighbors_decoded_not_in_rr") or [])
-    n_missing = len(rr.get("neighbors_in_rr_not_decoded") or [])
+    n_cc_miss = len(rr.get("neighbor_cc_mismatches") or [])
     if n_extra:
-        parts.append(f"{n_extra} extra neighbor(s) not in RR")
-    if n_missing:
-        parts.append(f"{n_missing} RR neighbor(s) not observed")
+        parts.append(f"{n_extra} new-site candidate neighbor(s)")
+    if n_cc_miss:
+        parts.append(f"{n_cc_miss} neighbor CC mismatch(es)")
     return "; ".join(parts)
 
 

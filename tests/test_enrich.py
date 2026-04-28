@@ -9,8 +9,10 @@ from __future__ import annotations
 from p25_survey.enrich import (
     BandOffsetSummary,
     EnrichmentResult,
+    NeighborCCMismatch,
     NeighborRef,
     enrich_record,
+    recommend_ppm,
     summarize_band_offsets,
 )
 from p25_survey.radioreference import (
@@ -189,12 +191,14 @@ class TestFrequencyOffset:
 # ---------------------------------------------------------------------------
 
 
-class TestNeighborDiff:
+class TestObservedNeighbors:
     def test_neighbors_match(self):
         sites = [
             _site(rfss=1, site_number=7, freqs_hz=[851_006_250]),
-            _site(rfss=1, site_number=8, freqs_hz=[851_106_250]),
-            _site(rfss=1, site_number=9, freqs_hz=[851_206_250]),
+            _site(rfss=1, site_number=8, freqs_hz=[851_106_250],
+                  description="Site Eight"),
+            _site(rfss=1, site_number=9, freqs_hz=[851_206_250],
+                  description="Site Nine"),
         ]
         client = FakeClient(system=_system(), sites=sites)
         result = enrich_record(
@@ -204,14 +208,20 @@ class TestNeighborDiff:
             ]),
             client,
         )
-        assert result.neighbors_in_rr_not_decoded == []
+        assert len(result.observed_neighbors) == 2
+        assert all(n.in_rr for n in result.observed_neighbors)
         assert result.neighbors_decoded_not_in_rr == []
+        assert result.neighbor_cc_mismatches == []
+        # RR data is attached for spot-checking
+        n8 = next(n for n in result.observed_neighbors if n.site_id == 8)
+        assert n8.description == "Site Eight"
+        assert n8.location == "City"
+        assert n8.county == "County"
 
-    def test_we_missed_a_neighbor(self):
-        # RR has sites 7/8/9; we're on 7 and decoded only site 8 in
-        # ADJ_STS_BCST. RR roster knows about 9 too, so it shows up as
-        # "in RR, not decoded" — informational, since ADJ_STS_BCST is a
-        # configured subset, not a discovery.
+    def test_unobserved_rr_sites_no_longer_listed(self):
+        # Regression: previously RR roster minus ADJ_STS_BCST produced a
+        # massive "informational" list. Now we only enumerate observed
+        # neighbors; unobserved RR-roster sites do not appear.
         sites = [
             _site(rfss=1, site_number=7, freqs_hz=[851_006_250]),
             _site(rfss=1, site_number=8, freqs_hz=[851_106_250]),
@@ -224,15 +234,13 @@ class TestNeighborDiff:
             ]),
             client,
         )
-        assert len(result.neighbors_in_rr_not_decoded) == 1
-        assert result.neighbors_in_rr_not_decoded[0].rfss_id == 1
-        assert result.neighbors_in_rr_not_decoded[0].site_id == 9
-        assert result.neighbors_in_rr_not_decoded[0].freq_hz == 851_206_250
+        assert [n.site_id for n in result.observed_neighbors] == [8]
         assert result.neighbors_decoded_not_in_rr == []
 
     def test_we_decoded_an_unknown_neighbor(self):
-        # We saw a neighbor advertising RFSS 1 / Site 99; RR has no such
-        # site in this system. That's a strong "admins should add" hint.
+        # ADJ_STS_BCST advertised RFSS 1 / Site 99; RR has no such site.
+        # Goes into both observed_neighbors (in_rr=False) and
+        # neighbors_decoded_not_in_rr.
         sites = [_site(rfss=1, site_number=7, freqs_hz=[851_006_250])]
         client = FakeClient(system=_system(), sites=sites)
         result = enrich_record(
@@ -241,12 +249,13 @@ class TestNeighborDiff:
             ]),
             client,
         )
+        assert len(result.observed_neighbors) == 1
+        assert result.observed_neighbors[0].in_rr is False
         assert len(result.neighbors_decoded_not_in_rr) == 1
         nref = result.neighbors_decoded_not_in_rr[0]
         assert nref.rfss_id == 1
         assert nref.site_id == 99
         assert nref.freq_hz == 860_500_000
-        assert result.neighbors_in_rr_not_decoded == []
 
     def test_voice_freqs_no_longer_flagged(self):
         # Regression: previously the diff compared frequency sets that
@@ -275,7 +284,73 @@ class TestNeighborDiff:
             client,
         )
         assert result.neighbors_decoded_not_in_rr == []
-        assert result.neighbors_in_rr_not_decoded == []
+        assert result.neighbor_cc_mismatches == []
+
+
+class TestNeighborCCMismatches:
+    def test_advertised_cc_missing_from_rr(self):
+        # Neighbor site exists in RR with a CC at 851.10625, but
+        # ADJ_STS_BCST advertises a different CC at 851.300 — that
+        # frequency isn't in the site's RR frequency list at all.
+        sites = [
+            _site(rfss=1, site_number=7, freqs_hz=[851_006_250]),
+            _site(rfss=1, site_number=8, freqs_hz=[851_106_250],
+                  description="Site Eight"),
+        ]
+        client = FakeClient(system=_system(), sites=sites)
+        result = enrich_record(
+            _record(neighbors=[
+                NeighborSite(freq_hz=851_300_000, rfss_id=1, site_id=8),
+            ]),
+            client,
+        )
+        assert len(result.neighbor_cc_mismatches) == 1
+        m = result.neighbor_cc_mismatches[0]
+        assert m.kind == "missing_from_rr"
+        assert m.rfss_id == 1 and m.site_id == 8
+        assert m.advertised_cc_hz == 851_300_000
+        assert m.rr_site_description == "Site Eight"
+
+    def test_advertised_cc_listed_but_not_marked_control(self):
+        # Neighbor's RR frequency list includes the advertised freq, but
+        # it's tagged use="" (traffic) instead of "d"/"a".
+        from p25_survey.radioreference import RRSite, RRSiteFreq
+        site_8 = RRSite(
+            sid=42, site_db_id=800, site_number=8, rfss=1,
+            description="Site Eight",
+            frequencies=[
+                RRSiteFreq(freq_hz=851_106_250, use=""),  # mistagged
+            ],
+        )
+        sites = [
+            _site(rfss=1, site_number=7, freqs_hz=[851_006_250]),
+            site_8,
+        ]
+        client = FakeClient(system=_system(), sites=sites)
+        result = enrich_record(
+            _record(neighbors=[
+                NeighborSite(freq_hz=851_106_250, rfss_id=1, site_id=8),
+            ]),
+            client,
+        )
+        assert len(result.neighbor_cc_mismatches) == 1
+        m = result.neighbor_cc_mismatches[0]
+        assert m.kind == "not_marked_control"
+        assert m.rr_use_code == ""
+
+    def test_unknown_neighbor_does_not_produce_cc_mismatch(self):
+        # New-site candidates (in_rr=False) shouldn't generate CC
+        # mismatches — there's no RR site to compare against.
+        sites = [_site(rfss=1, site_number=7, freqs_hz=[851_006_250])]
+        client = FakeClient(system=_system(), sites=sites)
+        result = enrich_record(
+            _record(neighbors=[
+                NeighborSite(freq_hz=860_500_000, rfss_id=1, site_id=99),
+            ]),
+            client,
+        )
+        assert result.neighbor_cc_mismatches == []
+        assert len(result.neighbors_decoded_not_in_rr) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -349,3 +424,109 @@ class TestSummarizeBandOffsets:
         # Median is the middle value sorted; mean averages all
         assert isinstance(s.mean_ppm, float)
         assert isinstance(s.median_ppm, float)
+
+
+# ---------------------------------------------------------------------------
+# --ppm recommendation
+# ---------------------------------------------------------------------------
+
+
+def _ppm_record(freq_hz: int, ppm: float) -> tuple[SurveyRecord, EnrichmentResult]:
+    """Build a (record, enrichment) pair with a precise per-record ppm."""
+    offset_hz = int(round(ppm * freq_hz / 1e6))
+    expected_hz = freq_hz - offset_hz
+    rec = _record(freq_hz=freq_hz)
+    enr = _enrichment_with_offset(freq_hz, expected_hz)
+    return rec, enr
+
+
+class TestRecommendPpm:
+    def test_insufficient_samples(self):
+        rec1, e1 = _ppm_record(851_000_000, 1.0)
+        rec2, e2 = _ppm_record(852_000_000, 1.1)
+        rec = recommend_ppm([rec1, rec2], {rec1.freq_hz: e1, rec2.freq_hz: e2})
+        assert rec.consistency == "insufficient_data"
+        assert rec.median_ppm is None
+        assert rec.iqr_ppm is None
+        assert rec.n_samples == 2
+
+    def test_high_consistency(self):
+        # Three sites tightly clustered near +1.0 ppm.
+        pairs = [
+            _ppm_record(851_000_000, 0.95),
+            _ppm_record(852_000_000, 1.00),
+            _ppm_record(853_000_000, 1.05),
+        ]
+        records = [r for r, _ in pairs]
+        enrichments = {r.freq_hz: e for r, e in pairs}
+        rec = recommend_ppm(records, enrichments)
+        assert rec.n_samples == 3
+        assert rec.median_ppm is not None
+        assert abs(rec.median_ppm - 1.0) < 0.01
+        assert rec.consistency == "high"
+        assert rec.cross_band_warning is None
+
+    def test_low_consistency(self):
+        # Wide spread → IQR > 0.5 ppm.
+        pairs = [
+            _ppm_record(851_000_000, -1.5),
+            _ppm_record(852_000_000, 0.0),
+            _ppm_record(853_000_000, 1.5),
+            _ppm_record(854_000_000, 2.0),
+        ]
+        records = [r for r, _ in pairs]
+        enrichments = {r.freq_hz: e for r, e in pairs}
+        rec = recommend_ppm(records, enrichments)
+        assert rec.consistency == "low"
+        assert rec.iqr_ppm > 0.5
+
+    def test_skips_records_without_match(self):
+        # Records with no enrichment offset are ignored entirely.
+        rec_match, e_match = _ppm_record(851_000_000, 1.0)
+        rec_match2, e_match2 = _ppm_record(852_000_000, 1.0)
+        rec_match3, e_match3 = _ppm_record(853_000_000, 1.0)
+        rec_unmatched = _record(freq_hz=860_000_000)
+        e_unmatched = EnrichmentResult(system_match=False)
+        records = [rec_match, rec_match2, rec_match3, rec_unmatched]
+        enrichments = {
+            rec_match.freq_hz: e_match,
+            rec_match2.freq_hz: e_match2,
+            rec_match3.freq_hz: e_match3,
+            rec_unmatched.freq_hz: e_unmatched,
+        }
+        rec = recommend_ppm(records, enrichments)
+        assert rec.n_samples == 3
+
+    def test_cross_band_divergence_warns(self):
+        # Two bands, each with several samples, but their medians diverge
+        # by >0.5 ppm — suspicious for a single-TCXO SDR.
+        pairs_800 = [
+            _ppm_record(851_000_000, -1.0),
+            _ppm_record(852_000_000, -1.05),
+            _ppm_record(853_000_000, -0.95),
+        ]
+        pairs_700 = [
+            _ppm_record(771_000_000, 1.0),
+            _ppm_record(772_000_000, 1.05),
+            _ppm_record(773_000_000, 0.95),
+        ]
+        all_pairs = pairs_800 + pairs_700
+        records = [r for r, _ in all_pairs]
+        enrichments = {r.freq_hz: e for r, e in all_pairs}
+        rec = recommend_ppm(records, enrichments)
+        assert rec.cross_band_warning is not None
+        assert "diverge" in rec.cross_band_warning
+
+    def test_no_warning_when_only_one_band_has_enough(self):
+        # 800 MHz has 3 samples; 700 MHz has only 1. With <2 bands at
+        # ≥2 samples each, we can't compare reliably — no warning.
+        pairs = [
+            _ppm_record(851_000_000, -1.0),
+            _ppm_record(852_000_000, -1.0),
+            _ppm_record(853_000_000, -1.0),
+            _ppm_record(771_000_000, 5.0),  # outlier in a band-of-one
+        ]
+        records = [r for r, _ in pairs]
+        enrichments = {r.freq_hz: e for r, e in pairs}
+        rec = recommend_ppm(records, enrichments)
+        assert rec.cross_band_warning is None
