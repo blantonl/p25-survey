@@ -47,14 +47,13 @@ The executable bundles the package only — `numpy`, `scipy`, `rich`, GNU Radio,
 and `gr-op25_repeater` come from the host's Python (this avoids ABI conflicts
 with GNU Radio's compiled C extensions).
 
-## Hardware requirements
+## Software dependencies
 
 On the host running the survey:
 
 - Python 3.10+
-- GNU Radio (3.10+ recommended)
-- `gr-osmosdr` with the driver you're using
-- A supported SDR plugged in (RTL-SDR / Airspy / HackRF)
+- GNU Radio 3.10+
+- `gr-osmosdr` with the driver matching your SDR (RTL-SDR / Airspy / HackRF)
 - **`gr-op25_repeater` built from the patched fork at
   [blantonl/op25 branch `p25-survey-patches`](https://github.com/blantonl/op25/tree/p25-survey-patches)**
 
@@ -62,13 +61,26 @@ The op25 fork carries two patches the survey tool depends on:
 1. Guard `op25_audio` destructor against an unstarted websocket thread.
 2. Add `frame_assembler::get_decode_stats()` for BER + decode rate.
 
-To install the patched op25 on Debian/Ubuntu:
+### Ubuntu 24.04 install recipe
+
+Runtime stack (GNU Radio + osmosdr + SDR drivers):
 
 ```bash
+sudo apt-get update
+sudo apt-get install -y \
+    gnuradio gnuradio-dev \
+    gr-osmosdr libosmosdr-dev \
+    librtlsdr-dev libairspy-dev libhackrf-dev \
+    python3-pip python3-pybind11
+```
+
+Then build and install the patched op25:
+
+```bash
+sudo apt-get install -y libcppunit-dev cmake build-essential pkg-config \
+    libsndfile1-dev libspdlog-dev
 git clone https://github.com/blantonl/op25.git
 cd op25 && git checkout p25-survey-patches
-sudo apt-get install -y libcppunit-dev cmake build-essential pkg-config \
-    python3-pybind11 libsndfile1-dev libspdlog-dev
 mkdir build && cd build && cmake .. && make -j$(nproc) && \
     sudo make install && sudo ldconfig
 ```
