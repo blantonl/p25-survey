@@ -200,17 +200,19 @@ For local dev, `[project.optional-dependencies] dev` still pulls them in via `pi
 
 ## 2026-04-25 — op25 patch: guard `op25_audio` destructor
 
-**Decision:** We carry a one-line patch to op25's `op25_audio.cc` (`ws_stop` skips when no websocket was started). It's required for any frame_assembler use that doesn't enable the websocket — the upstream destructor unconditionally `ws_thread.join()`s a default-constructed thread, which throws and aborts the process.
+**Status: upstreamed 2026-04-27** in [boatbod/op25 PR #271](https://github.com/boatbod/op25/pull/271). Stock `boatbod/op25` `dev` carries the fix; we no longer need a private patch.
 
-**Why:** Survey runs don't need the websocket. Passing `""` as the destination crashes on shutdown without this fix. Multi_rx.py masks the bug by always using a destination.
+**Decision (historical):** We carried a one-line patch to op25's `op25_audio.cc` (`ws_stop` skips when no websocket was started). It was required for any frame_assembler use that doesn't enable the websocket — the upstream destructor unconditionally `ws_thread.join()`s a default-constructed thread, which threw and aborted the process.
 
-**How to apply:** The patch is in our `~/dev/bcfy-clients/op25/` fork directly — it'll persist across rsyncs and across `make` rebuilds. If we ever upstream this, the fix is straightforward enough that it should land cleanly.
+**Why:** Survey runs don't need the websocket. Passing `""` as the destination crashed on shutdown without the fix. Multi_rx.py masks the bug by always using a destination, which is why it lay dormant in upstream.
 
 ---
 
 ## 2026-04-25 — op25 patch: expose decode statistics
 
-**Decision:** Patch op25 to expose `frame_assembler.get_decode_stats()` returning a struct with cumulative TSBK/PDU CRC pass/fail counts and timeout count. Survey decoder polls it during the dwell loop to compute BER and decode rate.
+**Status: superseded 2026-04-30** by the JSON-`control()` interface (see the 2026-04-28 entry below). The struct + pybind11 binding described here was rejected upstream in favor of the `control()` JSON channel; the counter increments and accessors were kept and now live behind `{"cmd":"fec_stats"}` in `boatbod/op25` `dev`.
+
+**Decision (historical):** Patch op25 to expose `frame_assembler.get_decode_stats()` returning a struct with cumulative TSBK/PDU CRC pass/fail counts and timeout count. Survey decoder polls it during the dwell loop to compute BER and decode rate.
 
 **Why:** op25 silently drops TSBKs that fail CRC inside `process_TSBK`/`process_PDU`. From the message queue we only see *successful* frames, so we can't measure link quality without instrumenting the FEC path.
 
@@ -316,11 +318,11 @@ either way.
 
 ## 2026-04-28 — op25 FEC stats: migrate from custom binding to JSON `control()`
 
-**Decision:** Plan to retire our custom `frame_assembler.get_decode_stats()` pybind11 binding (added 2026-04-25 above) once boatbod's op25 fork lands the JSON-`control()` interface he proposed in the FEC-stats PR thread. Replace the direct `fa.get_decode_stats()` call with `json.loads(fa.control('{"cmd":"fec_stats"}'))` and parse the agreed JSON envelope.
+**Decision:** Retire our custom `frame_assembler.get_decode_stats()` pybind11 binding (added 2026-04-25 above) in favor of a JSON-`control()` interface in boatbod's op25 fork. Replace the direct `fa.get_decode_stats()` call with `json.loads(fa.control('{"cmd":"fec_stats"}'))` and parse the agreed JSON envelope.
 
 **Why:** Boatbod's feedback on our FEC-stats PR was that pybind11 surface area is fragile and compiler-version-sensitive across his fork's user base. He proposed consolidating per-feature C++ glue behind a single `virtual std::string control(const std::string& args)` method that takes/returns JSON. We agreed to:
 1. Drop the pybind11 additions from our PR.
-2. Have him land a base-class signature change first (`void control(const std::string&)` → `std::string control(const std::string&)`, mechanical fork-wide refactor).
+2. Land a base-class signature change first (`void control(const std::string&)` → `std::string control(const std::string&)`, mechanical fork-wide refactor).
 3. Re-cut the FEC-stats PR on top, dispatching `{"cmd":"fec_stats"}` through `control()` and returning a JSON envelope.
 
 The maintainer chose option 2 (return-by-value) over option 1 (out-param) — RVO + move semantics make it zero-cost, and the binding-side handling is symmetric.
@@ -338,17 +340,22 @@ The maintainer chose option 2 (return-by-value) over option 1 (out-param) — RV
 }
 ```
 
-Two design choices that matter for our migration cadence:
+Two design choices that matter:
 - **Raw counters, not pre-computed rates.** Op25 doesn't take a position on smoothing windows; consumers compute BER themselves. Lets each op25 release evolve without redefining "BER".
 - **`schema` field in the envelope.** Lets us branch on schema version for forward compatibility instead of sniffing op25 build strings (boatbod doesn't tag releases reliably).
 
-**Impact on this repo:**
-- *Existing* code keeps working unchanged through PR 1 (signature swap) — we don't call `control()` from Python anywhere.
-- One-line swap in `decoder.py` (around the current `fa.get_decode_stats()` call) once PR 2 lands. Map JSON counters to `state.tsbk_attempted` / `state.tsbk_passed` at the boundary; the public `SignalQuality` schema doesn't change.
-- Add a try/except wrapper that prefers `control()` and falls back to `get_decode_stats()` for one or two releases — boatbod's fork doesn't tag, and we've been telling users to follow main, so we'll have both shapes in the wild for a while.
-- README's pinned op25 commit moves forward once the new interface is the recommended target.
+**Status (shipped 2026-04-30):** Both PRs merged into boatbod/op25 `dev`:
+- [PR #273](https://github.com/boatbod/op25/pull/273) — `control()` signature widened to `std::string` return.
+- [PR #272](https://github.com/boatbod/op25/pull/272) — `fec_stats` command implemented; counters in `p25p1_fdma`, JSON formatting in `rx_sync.cc`.
 
-**Follow-up (not yet done):** The voice-FEC counters in the new envelope (`golay_corrected`, `rs_unrecoverable`) give us *real* post-FEC residual error data. Today's `ber_pct_mean` in `decoder.py` is a CRC-pass-rate proxy on TSBK blocks (control-channel only). After PR 2, we can compute proper symbol-level BER from voice frames and surface "voice FEC marginal" as a distinct flag, while keeping the CRC proxy as a fallback for control-only dwells with no voice traffic.
+What we ship today (control section + sync.losses): `tsbk_attempted`, `tsbk_crc_passed`, `pdu_attempted`, `pdu_crc_passed`, `losses`. The `voice`, `trellis_corrected`, and `sync.acquisitions` slots are reserved in the schema for future PRs but not populated — would need new instrumentation in the voice decoder and sync state machine. Forward-compatible additions under `schema: 1`; consumers should treat missing fields as null.
+
+**This repo** (`v0.3.0`):
+- `decoder.py` swapped to `json.loads(fa.control('{"cmd":"fec_stats"}'))["data"]["control"]`. Local `SurveyState` field names (`tsbk_attempted` / `tsbk_passed`) preserved; envelope's `tsbk_crc_passed` mapped to `tsbk_passed` at the boundary so the public `SignalQuality` schema doesn't change.
+- No try/except fallback to the old `get_decode_stats()` API. We control deploys and the patches branch was always meant to be transitional — clean cutover at v0.3.0 keeps the code simple.
+- README install recipe now points at stock `boatbod/op25` `dev`. The `p25-survey-patches` branch is no longer maintained.
+
+**Follow-up (not yet done):** The voice-FEC counters in the schema (`golay_corrected`, `rs_unrecoverable`) would give us real post-FEC residual error data. Today's `ber_pct_mean` is a CRC-pass-rate proxy on TSBK blocks (control-channel only). When upstream ships voice instrumentation, we can compute proper symbol-level BER from voice frames and surface "voice FEC marginal" as a distinct flag, keeping the CRC proxy as a fallback for control-only dwells with no voice traffic.
 
 ---
 

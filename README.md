@@ -54,12 +54,10 @@ On the host running the survey:
 - Python 3.10+
 - GNU Radio 3.10+
 - `gr-osmosdr` with the driver matching your SDR (RTL-SDR / Airspy / HackRF)
-- **`gr-op25_repeater` built from the patched fork at
-  [blantonl/op25 branch `p25-survey-patches`](https://github.com/blantonl/op25/tree/p25-survey-patches)**
-
-The op25 fork carries two patches the survey tool depends on:
-1. Guard `op25_audio` destructor against an unstarted websocket thread.
-2. Add `frame_assembler::get_decode_stats()` for BER + decode rate.
+- `gr-op25_repeater` from [boatbod/op25](https://github.com/boatbod/op25) `dev`
+  branch (or `master` once `dev` is merged forward). The two patches this tool
+  previously required — the audio-destructor guard and FEC stats — are now
+  upstream, so a stock build works.
 
 ### Ubuntu 24.04 install recipe
 
@@ -74,13 +72,13 @@ sudo apt-get install -y \
     python3-pip python3-pybind11
 ```
 
-Then build and install the patched op25:
+Then build and install op25:
 
 ```bash
 sudo apt-get install -y libcppunit-dev cmake build-essential pkg-config \
     libsndfile1-dev libspdlog-dev
-git clone https://github.com/blantonl/op25.git
-cd op25 && git checkout p25-survey-patches
+git clone https://github.com/boatbod/op25.git
+cd op25 && git checkout dev
 mkdir build && cd build && cmake .. && make -j$(nproc) && \
     sudo make install && sudo ldconfig
 ```

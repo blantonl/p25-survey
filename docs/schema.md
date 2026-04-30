@@ -55,7 +55,7 @@ each write. A scan that crashes mid-run leaves a valid file.
 |---|---|---|
 | `rssi_dbfs_mean` | float \| null | Mean during dwell. Sampled from raw IQ via gnuradio `probe_signal_f` block, so populated for every record (including no-cc). |
 | `rssi_dbfs_peak` | float \| null | Peak during dwell. |
-| `ber_pct_mean` | float \| null | Block error rate proxy from op25 `frame_assembler.get_decode_stats()`. Computed as `(tsbk_attempted - tsbk_passed) / tsbk_attempted * 100`. Null when no TSBKs were attempted (decoder never locked). |
+| `ber_pct_mean` | float \| null | Block error rate proxy from op25 `frame_assembler.control('{"cmd":"fec_stats"}')`. Computed as `(tsbk_attempted - tsbk_crc_passed) / tsbk_attempted * 100`. Null when no TSBKs were attempted (decoder never locked). |
 | `decode_rate_pct` | float \| null | Successfully-decoded TSBK fraction. Complement of `ber_pct_mean`. |
 
 ## `rr` (RadioReference enrichment)
