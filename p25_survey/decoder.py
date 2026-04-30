@@ -18,6 +18,7 @@ without GNU Radio.
 from __future__ import annotations
 
 import ctypes
+import json
 import math
 import os
 import sys
@@ -69,7 +70,7 @@ class _DwellState:
     frame_count: int = 0
     broadcast_count: int = 0   # NET_STS / RFSS_STS / IDEN_UP / ADJ_STS only
     rssi_samples: list[float] = field(default_factory=list)  # dBFS
-    tsbk_attempted: int = 0   # cumulative from frame_assembler.get_decode_stats()
+    tsbk_attempted: int = 0   # cumulative from frame_assembler.control({"cmd":"fec_stats"})
     tsbk_passed: int = 0
     notes: list[str] = field(default_factory=list)
 
@@ -316,9 +317,9 @@ def decode_candidate(
                     level = float(rssi_probe.level())
                     if level > 0:
                         state.rssi_samples.append(10.0 * math.log10(level))
-                    stats = fa.get_decode_stats()
-                    state.tsbk_attempted = int(stats.tsbk_attempted)
-                    state.tsbk_passed = int(stats.tsbk_passed)
+                    fec = json.loads(fa.control('{"cmd":"fec_stats"}'))["data"]["control"]
+                    state.tsbk_attempted = int(fec["tsbk_attempted"])
+                    state.tsbk_passed = int(fec["tsbk_crc_passed"])
                     next_rssi_sample = now + 0.1
                 if not rx_q.empty_p():
                     msg = rx_q.delete_head()
