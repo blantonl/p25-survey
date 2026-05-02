@@ -97,6 +97,10 @@ class EnrichmentResult:
     """
     system_match: bool = False
     site_match: bool = False
+    # True when the system has multiple sites with this RFSS/Site number
+    # (multi-subsystem layout) and NAC didn't pick one. Distinct from a
+    # genuine "new site" — we know the site exists, just can't tell which.
+    ambiguous_site: bool = False
 
     # When system_match=True
     rr_system_name: str | None = None
@@ -106,6 +110,7 @@ class EnrichmentResult:
     rr_site_description: str | None = None
     rr_site_location: str | None = None
     rr_site_county: str | None = None
+    rr_site_nac: str | None = None
     rr_site_lat: float | None = None
     rr_site_lon: float | None = None
     rr_site_licenses: list[str] = field(default_factory=list)
@@ -182,18 +187,34 @@ def enrich_record(record: SurveyRecord, client: RRClient) -> EnrichmentResult:
         result.notes.append(f"could not fetch sites for sid={system.sid}: {exc}")
         return result
 
-    site = _find_site(sites, record.rfss_id, record.site_id)
+    site, ambiguous = _find_site(sites, record.rfss_id, record.site_id, record.nac)
     if site is None:
-        result.notes.append(
-            f"new site: RFSS {record.rfss_id} / Site {record.site_id} not in "
-            f"RR for system {system.name!r} (sid={system.sid})"
-        )
+        if ambiguous:
+            result.ambiguous_site = True
+            nac_hex = format(record.nac, "03X") if record.nac is not None else "—"
+            candidate_nacs = ", ".join(
+                f"{s.nac or '(blank)'}"
+                for s in sites
+                if s.rfss == record.rfss_id and s.site_number == record.site_id
+            )
+            result.notes.append(
+                f"ambiguous site: RFSS {record.rfss_id} / Site {record.site_id} "
+                f"matches multiple subsystems in {system.name!r} (sid={system.sid}); "
+                f"decoded NAC {nac_hex} doesn't match any candidate "
+                f"(RR has NAC {candidate_nacs})"
+            )
+        else:
+            result.notes.append(
+                f"new site: RFSS {record.rfss_id} / Site {record.site_id} not in "
+                f"RR for system {system.name!r} (sid={system.sid})"
+            )
         return result
 
     result.site_match = True
     result.rr_site_description = site.description or None
     result.rr_site_location = site.location or None
     result.rr_site_county = site.county or None
+    result.rr_site_nac = site.nac or None
     result.rr_site_lat = site.lat
     result.rr_site_lon = site.lon
     result.rr_site_licenses = list(site.licenses)
@@ -277,16 +298,38 @@ def _check_neighbor_cc(neighbor: NeighborSite,
     return None
 
 
-def _find_site(sites: Iterable[RRSite], rfss_id: int, site_id: int) -> RRSite | None:
-    """Match decoded RFSS/Site to RR's per-site records.
+def _find_site(sites: Iterable[RRSite], rfss_id: int, site_id: int,
+               nac: int | None = None) -> tuple[RRSite | None, bool]:
+    """Match decoded RFSS/Site (and NAC) to RR's per-site records.
 
     Decoded `site_id` corresponds to RR's `siteNumber` (the P25 site number),
     not RR's internal `siteId` DB key.
+
+    Multi-subsystem networks (one RR `sid` covering more than one P25
+    WACN/SYSID, e.g. Alabama AIRS) commonly have the same RFSS/Site
+    number on both subsystems. NAC is what disambiguates them — each
+    subsystem uses its own NAC range. When the RFSS/Site lookup matches
+    more than one site, we require NAC equality to pick.
+
+    Returns (site, ambiguous):
+      - (site, False)  → unique match (or NAC narrowed it down)
+      - (None, False)  → no RFSS/Site match at all (genuine new site)
+      - (None, True)   → multiple RFSS/Site matches, NAC didn't pick one
     """
-    for s in sites:
-        if s.rfss == rfss_id and s.site_number == site_id:
-            return s
-    return None
+    matches = [s for s in sites if s.rfss == rfss_id and s.site_number == site_id]
+    if not matches:
+        return None, False
+    if len(matches) == 1:
+        return matches[0], False
+    if nac is not None:
+        nac_hex = format(nac, "03X").upper().lstrip("0") or "0"
+        nac_matches = [
+            s for s in matches
+            if (s.nac or "").upper().lstrip("0") == nac_hex
+        ]
+        if len(nac_matches) == 1:
+            return nac_matches[0], False
+    return None, True
 
 
 def _rr_neighbor_sites(all_sites: Iterable[RRSite],

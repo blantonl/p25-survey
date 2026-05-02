@@ -82,6 +82,15 @@ class TestNewSystems:
         text = render([rec], {rec.freq_hz: enr})
         assert "## New systems" not in text
 
+    def test_skips_incomplete_decode(self):
+        """Even with WACN/SYSID decoded, complete=False means low confidence — skip."""
+        rec = _record()
+        rec.complete = False
+        enr = EnrichmentResult(system_match=False)
+        text = render([rec], {rec.freq_hz: enr})
+        assert "## New systems" not in text
+        assert "New systems candidates: **0**" in text
+
 
 # ---------------------------------------------------------------------------
 # Section: new sites
@@ -101,6 +110,47 @@ class TestNewSites:
         assert "RFSS 1 / Site 7" in text
         assert "851.00625 MHz" in text
         assert "Band plan (2 entries)" in text
+        # SYSID is included alongside WACN/NAC for unambiguous identification
+        assert "SYSID: 1A4" in text
+
+    def test_skips_when_rfss_site_undecoded(self):
+        """Russ's case: weak signal, RFSS/Site fields blank — must not be reported as new site."""
+        rec = _record(rfss_id=None, site_id=None)
+        enr = EnrichmentResult(
+            system_match=True, site_match=False,
+            rr_system_name="Mississippi Wireless Information Network (MSWIN)",
+            rr_sid=4879,
+            notes=["RFSS/Site not decoded; can't match site-level data"],
+        )
+        text = render([rec], {rec.freq_hz: enr})
+        assert "## New sites" not in text
+        assert "RFSS None / Site None" not in text
+        assert "New sites candidates: **0**" in text
+
+    def test_skips_partial_decode(self):
+        """Partial decodes (complete=False) are too low-confidence for submission."""
+        rec = _record()
+        rec.complete = False
+        enr = EnrichmentResult(
+            system_match=True, site_match=False,
+            rr_system_name="State Public Safety", rr_sid=42,
+        )
+        text = render([rec], {rec.freq_hz: enr})
+        assert "## New sites" not in text
+        assert "New sites candidates: **0**" in text
+
+    def test_skips_ambiguous_subsystem_match(self):
+        """Multi-subsystem ambiguity isn't a new site — don't submit it."""
+        rec = _record()
+        enr = EnrichmentResult(
+            system_match=True, site_match=False, ambiguous_site=True,
+            rr_system_name="Alabama Interoperable Radio System (AIRS)",
+            rr_sid=7258,
+            notes=["ambiguous site: RFSS 5 / Site 5 matches multiple subsystems"],
+        )
+        text = render([rec], {rec.freq_hz: enr})
+        assert "## New sites" not in text
+        assert "New sites candidates: **0**" in text
 
 
 # ---------------------------------------------------------------------------
@@ -128,6 +178,39 @@ class TestFreqMismatch:
         assert "851.00900 MHz" in text
         assert "+2750 Hz" in text
         assert "+3.231 ppm" in text
+
+    def test_annotates_rr_nac_when_it_differs(self):
+        """When RR's site NAC disagrees with the decoded NAC, surface it
+        in the freq-mismatch entry — this is the diagnostic Russ asked for."""
+        rec = _record(freq_hz=851_009_000, nac=0x293)
+        enr = EnrichmentResult(
+            system_match=True, site_match=True,
+            rr_system_name="State Public Safety",
+            rr_site_description="Downtown",
+            rr_site_nac="2A0",
+            cc_freq_offset=FreqOffset(decoded_hz=851_009_000,
+                                      expected_hz=851_006_250,
+                                      offset_hz=2750, ppm=3.231),
+            cc_freq_in_db=False,
+        )
+        text = render([rec], {rec.freq_hz: enr})
+        assert "Decoded WACN/SYSID/NAC" in text
+        assert "RR site NAC: 2A0" in text
+
+    def test_omits_rr_nac_when_it_matches(self):
+        rec = _record(freq_hz=851_009_000, nac=0x293)
+        enr = EnrichmentResult(
+            system_match=True, site_match=True,
+            rr_system_name="State Public Safety",
+            rr_site_description="Downtown",
+            rr_site_nac="293",
+            cc_freq_offset=FreqOffset(decoded_hz=851_009_000,
+                                      expected_hz=851_006_250,
+                                      offset_hz=2750, ppm=3.231),
+            cc_freq_in_db=False,
+        )
+        text = render([rec], {rec.freq_hz: enr})
+        assert "RR site NAC" not in text
 
 
 # ---------------------------------------------------------------------------

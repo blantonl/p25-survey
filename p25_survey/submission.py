@@ -69,24 +69,31 @@ def render(records: list[SurveyRecord],
     n_with_enrich = sum(1 for r in records if enrichments.get(r.freq_hz) is not None)
     n_new_system = sum(
         1 for r in records
-        if (e := enrichments.get(r.freq_hz)) and not e.system_match and r.wacn is not None
+        if r.complete
+        and (e := enrichments.get(r.freq_hz)) and not e.system_match and r.wacn is not None
     )
     n_new_site = sum(
         1 for r in records
-        if (e := enrichments.get(r.freq_hz)) and e.system_match and not e.site_match
+        if r.complete
+        and r.rfss_id is not None and r.site_id is not None
+        and (e := enrichments.get(r.freq_hz))
+        and e.system_match and not e.site_match and not e.ambiguous_site
     )
     n_freq_mismatch = sum(
         1 for r in records
-        if (e := enrichments.get(r.freq_hz)) and e.site_match and not e.cc_freq_in_db
+        if r.complete
+        and (e := enrichments.get(r.freq_hz)) and e.site_match and not e.cc_freq_in_db
     )
     n_neighbor_new = sum(
         1 for r in records
-        if (e := enrichments.get(r.freq_hz))
+        if r.complete
+        and (e := enrichments.get(r.freq_hz))
         and e.site_match and e.neighbors_decoded_not_in_rr
     )
     n_neighbor_cc_miss = sum(
         1 for r in records
-        if (e := enrichments.get(r.freq_hz))
+        if r.complete
+        and (e := enrichments.get(r.freq_hz))
         and e.site_match and e.neighbor_cc_mismatches
     )
 
@@ -191,7 +198,7 @@ def _write_new_systems(out: StringIO, records: list[SurveyRecord],
                        enrichments: dict[int, EnrichmentResult]) -> None:
     for r in sorted(records, key=lambda x: x.freq_hz):
         e = enrichments.get(r.freq_hz)
-        if e is None or e.system_match or r.wacn is None:
+        if e is None or e.system_match or r.wacn is None or not r.complete:
             continue
         out.write(f"### WACN {_hex(r.wacn, 5)} / SYSID {_hex(r.sysid, 3)} "
                   f"(NAC {_hex(r.nac, 3)})\n\n")
@@ -214,12 +221,15 @@ def _write_new_sites(out: StringIO, records: list[SurveyRecord],
                      enrichments: dict[int, EnrichmentResult]) -> None:
     for r in sorted(records, key=lambda x: x.freq_hz):
         e = enrichments.get(r.freq_hz)
-        if e is None or not e.system_match or e.site_match:
+        if e is None or not e.system_match or e.site_match or e.ambiguous_site:
+            continue
+        if not r.complete or r.rfss_id is None or r.site_id is None:
             continue
         out.write(f"### {e.rr_system_name}: RFSS {r.rfss_id} / Site {r.site_id}\n\n")
         out.write(f"- Control channel: {_fmt_freq_mhz(r.freq_hz)}\n")
         out.write(f"- NAC: {_hex(r.nac, 3)}\n")
         out.write(f"- WACN: {_hex(r.wacn, 5)}\n")
+        out.write(f"- SYSID: {_hex(r.sysid, 3)}\n")
         if r.signal.rssi_dbfs_mean is not None:
             out.write(f"- Signal: RSSI {r.signal.rssi_dbfs_mean} dBFS\n")
         if r.iden_up:
@@ -243,7 +253,7 @@ def _write_freq_mismatches(out: StringIO, records: list[SurveyRecord],
         e = enrichments.get(r.freq_hz)
         if e is None or not e.site_match or e.cc_freq_in_db:
             continue
-        if e.cc_freq_offset is None:
+        if e.cc_freq_offset is None or not r.complete:
             continue
         out.write(f"### {e.rr_system_name}: RFSS {r.rfss_id} / Site {r.site_id}"
                   f"{' — ' + e.rr_site_description if e.rr_site_description else ''}\n\n")
@@ -252,8 +262,11 @@ def _write_freq_mismatches(out: StringIO, records: list[SurveyRecord],
         sign = "+" if e.cc_freq_offset.offset_hz >= 0 else ""
         out.write(f"- Offset: {sign}{e.cc_freq_offset.offset_hz} Hz "
                   f"({sign}{e.cc_freq_offset.ppm:.3f} ppm)\n")
-        out.write(f"- WACN/SYSID/NAC: {_hex(r.wacn, 5)} / "
-                  f"{_hex(r.sysid, 3)} / {_hex(r.nac, 3)}\n\n")
+        decoded_nac = _hex(r.nac, 3)
+        nac_line = f"- Decoded WACN/SYSID/NAC: {_hex(r.wacn, 5)} / {_hex(r.sysid, 3)} / {decoded_nac}"
+        if e.rr_site_nac and e.rr_site_nac.upper().lstrip("0") != decoded_nac.lstrip("0"):
+            nac_line += f" (RR site NAC: {e.rr_site_nac})"
+        out.write(nac_line + "\n\n")
 
 
 def _site_header(r: SurveyRecord, e: EnrichmentResult) -> str:
@@ -266,6 +279,8 @@ def _write_new_site_candidates(out: StringIO, records: list[SurveyRecord],
     for r in sorted(records, key=lambda x: x.freq_hz):
         e = enrichments.get(r.freq_hz)
         if e is None or not e.site_match or not e.neighbors_decoded_not_in_rr:
+            continue
+        if not r.complete:
             continue
         out.write(_site_header(r, e))
         out.write(f"- Decoded CC: {_fmt_freq_mhz(r.freq_hz)}\n")
@@ -281,6 +296,8 @@ def _write_neighbor_cc_mismatches(out: StringIO, records: list[SurveyRecord],
     for r in sorted(records, key=lambda x: x.freq_hz):
         e = enrichments.get(r.freq_hz)
         if e is None or not e.site_match or not e.neighbor_cc_mismatches:
+            continue
+        if not r.complete:
             continue
         out.write(_site_header(r, e))
         out.write(f"- Decoded CC: {_fmt_freq_mhz(r.freq_hz)}\n")

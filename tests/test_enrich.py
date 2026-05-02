@@ -62,11 +62,13 @@ def _system() -> RRSystem:
 
 def _site(rfss: int, site_number: int, freqs_hz: list[int],
           alt_freqs_hz: list[int] | None = None,
-          description: str = "Site Foo") -> RRSite:
+          description: str = "Site Foo",
+          nac: str = "") -> RRSite:
     fs = [RRSiteFreq(freq_hz=f, use="d") for f in freqs_hz]
     fs += [RRSiteFreq(freq_hz=f, use="a") for f in (alt_freqs_hz or [])]
     return RRSite(
         sid=42, site_db_id=site_number * 100, site_number=site_number, rfss=rfss,
+        nac=nac,
         description=description, location="City",
         county="County", lat=40.0, lon=-83.0,
         frequencies=fs, licenses=["WPRR123"],
@@ -140,6 +142,60 @@ class TestSystemMatching:
         result = enrich_record(_record(), client)
         assert not result.system_match
         assert any("network down" in n for n in result.notes)
+
+
+class TestMultiSubsystemDisambiguation:
+    """Russ's bug: an RR sid covering multiple WACN/SYSID subsystems
+    can have the same RFSS/Site number on each subsystem. Without NAC
+    disambiguation, _find_site returns whichever subsystem appears first
+    and the wrong site is matched."""
+
+    def test_nac_picks_correct_subsystem(self):
+        # AIRS-like layout: sid=42 holds two subsystems, both with RFSS=5/Site=5.
+        # The decoded NAC should pick the right one.
+        sites = [
+            _site(rfss=5, site_number=5, freqs_hz=[773_068_750],
+                  description="Saraland", nac="2A0"),  # SYSID 00A subsystem
+            _site(rfss=5, site_number=5, freqs_hz=[770_356_250],
+                  description="Mercedes (Vance)", nac="465"),  # SYSID 46B subsystem
+        ]
+        client = FakeClient(system=_system(), sites=sites)
+        rec = _record(freq_hz=770_356_250, rfss_id=5, site_id=5)
+        rec.nac = 0x465
+        result = enrich_record(rec, client)
+        assert result.site_match
+        assert result.rr_site_description == "Mercedes (Vance)"
+        assert result.rr_site_nac == "465"
+        assert result.cc_freq_in_db  # picked the right site → freq matches
+
+    def test_nac_mismatch_yields_ambiguous_note(self):
+        # Both candidate sites exist but neither matches the decoded NAC.
+        # We should refuse to pick (no site_match) and explain why.
+        sites = [
+            _site(rfss=5, site_number=5, freqs_hz=[773_068_750],
+                  description="Saraland", nac="2A0"),
+            _site(rfss=5, site_number=5, freqs_hz=[770_356_250],
+                  description="Mercedes (Vance)", nac="465"),
+        ]
+        client = FakeClient(system=_system(), sites=sites)
+        rec = _record(rfss_id=5, site_id=5)
+        rec.nac = 0x999  # matches neither candidate
+        result = enrich_record(rec, client)
+        assert not result.site_match
+        assert result.ambiguous_site
+        assert any("ambiguous site" in n for n in result.notes)
+        # Note should list candidate NACs so an admin can debug.
+        note = " ".join(result.notes)
+        assert "2A0" in note and "465" in note
+
+    def test_single_match_still_works_without_nac(self):
+        # When only one site matches RFSS/Site, NAC isn't required to pick.
+        # Preserves behavior for the (very common) single-subsystem case
+        # where RR's site.nac field is blank.
+        sites = [_site(rfss=1, site_number=7, freqs_hz=[851_006_250], nac="")]
+        client = FakeClient(system=_system(), sites=sites)
+        result = enrich_record(_record(), client)
+        assert result.site_match
 
 
 # ---------------------------------------------------------------------------
