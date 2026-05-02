@@ -10,12 +10,13 @@ actually programs into the device, and so you can build an equivalent
 `--device-args` string for per-stage control (see "Per-stage control"
 below).
 
-> **Heads-up — the preset is inversely ordered.**
-> Preset **0** = all stages at their maximum (highest gain).
-> Preset **21** = LNA off, mixer off, IF/VGA at minimum (lowest gain).
-> Lower preset value → more gain. This trips up almost everyone the
-> first time. The libairspy help text just says "0–21" without naming
-> the direction.
+> **Note — the source arrays appear backwards, but the API is not.**
+> - Preset **0** = LNA off, mixer off, IF/VGA at minimum (lowest gain).
+> - Preset **21** = all stages at maximum (highest gain).
+>> Higher preset value → more gain. The raw C arrays in `airspy.c` seem
+> reversed because they are stored highest-first. The driver inverts the
+> index before lookup using `GAIN_COUNT - 1 - N`. The tables on this
+> page reflect the corrected mappings as experienced by the user.
 
 Per-stage register ranges (from `airspy_rx.c`): LNA 0–14, MIX 0–15,
 IF/VGA 0–15. Each row below is what the preset programs into those
@@ -28,28 +29,28 @@ preset for crowded bands like 700/800 MHz public-safety.
 
 | Preset | LNA | MIX | IF/VGA |
 |-------:|----:|----:|-------:|
-|  0     | 14  | 12  | 13     |
-|  1     | 14  | 12  | 12     |
-|  2     | 14  | 11  | 11     |
-|  3     | 13  |  9  | 11     |
-|  4     | 12  |  8  | 11     |
-|  5     | 10  |  7  | 11     |
-|  6     |  9  |  6  | 11     |
-|  7     |  9  |  6  | 10     |
-|  8     |  8  |  5  | 10     |
-|  9     |  9  |  0  | 10     |
-| 10     |  8  |  0  | 10     |
-| 11     |  6  |  1  | 10     |
-| 12     |  5  |  0  | 10     |
-| 13     |  3  |  0  | 10     |
-| 14     |  1  |  2  | 10     |
-| 15     |  0  |  2  | 10     |
-| 16     |  0  |  1  |  9     |
-| 17     |  0  |  1  |  8     |
-| 18     |  0  |  1  |  7     |
-| 19     |  0  |  1  |  6     |
-| 20     |  0  |  0  |  5     |
-| 21     |  0  |  0  |  4     |
+|  0     |  0  |  0  |  4     |
+|  1     |  0  |  0  |  5     |
+|  2     |  0  |  1  |  6     |
+|  3     |  0  |  1  |  7     |
+|  4     |  0  |  1  |  8     |
+|  5     |  0  |  1  |  9     |
+|  6     |  0  |  2  | 10     |
+|  7     |  1  |  2  | 10     |
+|  8     |  3  |  0  | 10     |
+|  9     |  5  |  0  | 10     |
+| 10     |  6  |  1  | 10     |
+| 11     |  8  |  0  | 10     |
+| 12     |  9  |  0  | 10     |
+| 13     |  8  |  5  | 10     |
+| 14     |  9  |  6  | 10     |
+| 15     |  9  |  6  | 11     |
+| 16     | 10  |  7  | 11     |
+| 17     | 12  |  8  | 11     |
+| 18     | 13  |  9  | 11     |
+| 19     | 14  | 11  | 11     |
+| 20     | 14  | 12  | 12     |
+| 21     | 14  | 12  | 13     |
 
 ## Sensitivity preset
 
@@ -60,28 +61,28 @@ in `--device-args` — e.g. `--device-args "airspy=0,sensitivity=12"`.
 
 | Preset | LNA | MIX | IF/VGA |
 |-------:|----:|----:|-------:|
-|  0     | 14  | 12  | 13     |
-|  1     | 14  | 12  | 12     |
-|  2     | 14  | 12  | 11     |
-|  3     | 14  | 12  | 10     |
-|  4     | 14  | 11  |  9     |
-|  5     | 14  | 10  |  8     |
-|  6     | 14  | 10  |  7     |
-|  7     | 14  |  9  |  6     |
-|  8     | 14  |  9  |  5     |
-|  9     | 13  |  8  |  5     |
-| 10     | 12  |  7  |  5     |
-| 11     | 12  |  4  |  5     |
-| 12     |  9  |  4  |  5     |
-| 13     |  9  |  4  |  4     |
-| 14     |  8  |  3  |  4     |
-| 15     |  7  |  2  |  4     |
-| 16     |  6  |  2  |  4     |
-| 17     |  5  |  1  |  4     |
-| 18     |  3  |  0  |  4     |
-| 19     |  2  |  0  |  4     |
-| 20     |  1  |  0  |  4     |
-| 21     |  0  |  0  |  4     |
+|  0     |  0  |  0  |  4     |
+|  1     |  1  |  0  |  4     |
+|  2     |  2  |  0  |  4     |
+|  3     |  3  |  0  |  4     |
+|  4     |  5  |  1  |  4     |
+|  5     |  6  |  2  |  4     |
+|  6     |  7  |  2  |  4     |
+|  7     |  8  |  3  |  4     |
+|  8     |  9  |  4  |  4     |
+|  9     |  9  |  4  |  5     |
+| 10     | 12  |  4  |  5     |
+| 11     | 12  |  7  |  5     |
+| 12     | 13  |  8  |  5     |
+| 13     | 14  |  9  |  5     |
+| 14     | 14  |  9  |  6     |
+| 15     | 14  | 10  |  7     |
+| 16     | 14  | 10  |  8     |
+| 17     | 14  | 11  |  9     |
+| 18     | 14  | 12  | 10     |
+| 19     | 14  | 12  | 11     |
+| 20     | 14  | 12  | 12     |
+| 21     | 14  | 12  | 13     |
 
 ## Per-stage control via `--device-args`
 
@@ -119,7 +120,7 @@ you suspect a tuning change has shipped.
 
 The default gain sweep grid for Airspy is `[4, 8, 12, 16, 20]` (see
 `p25_survey/gain_sweep.py`). That spans the linearity preset from "very
-hot" (preset 4: LNA 12, MIX 8, IF 11) to "cold" (preset 20: LNA 0,
-MIX 0, IF 5), which gives BER-vs-gain enough dynamic range to find
+cold" (preset 4: LNA 0, MIX 1, IF 8) to "hot" (preset 20: LNA 14, MIX 12, 
+IF 12), which gives BER-vs-gain enough dynamic range to find
 the actual decoder sweet spot for your antenna and your local RF
 environment without burning dwell time on near-duplicate rows.
