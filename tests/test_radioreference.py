@@ -75,7 +75,7 @@ class TestGetUserData:
 # ---------------------------------------------------------------------------
 
 
-class TestFindSystemByWacnSysid:
+class TestFindSystemsByWacnSysid:
     def test_single_match(self, monkeypatch):
         by_sysid = _xml_to_body("""
             <getTrsBySysidReturn>
@@ -97,11 +97,11 @@ class TestFindSystemByWacnSysid:
             "getTrsBySysid": by_sysid,
             "getTrsDetails": details,
         })
-        sys = client.find_system_by_wacn_sysid("BEE00", "1A4")
-        assert isinstance(sys, RRSystem)
-        assert sys.sid == 123
-        assert sys.name == "State Public Safety"
-        assert sys.has_wacn_sysid("BEE00", "1A4")
+        systems = client.find_systems_by_wacn_sysid("BEE00", "1A4")
+        assert len(systems) == 1
+        assert systems[0].sid == 123
+        assert systems[0].name == "State Public Safety"
+        assert systems[0].has_wacn_sysid("BEE00", "1A4")
 
     def test_filters_by_wacn(self, monkeypatch):
         # Two SIDs with the same SYSID, only one with our WACN
@@ -111,7 +111,6 @@ class TestFindSystemByWacnSysid:
               <TrsListDef><sid>200</sid></TrsListDef>
             </getTrsBySysidReturn>
         """)
-        # Two different details responses based on which SID is queried
         details_100 = _xml_to_body("""
             <getTrsDetailsReturn>
               <sName>Other System</sName>
@@ -126,10 +125,8 @@ class TestFindSystemByWacnSysid:
         """)
 
         client = RRClient(username="u", password="p", appkey="x")
-        captured: dict[str, list] = {"calls": []}
 
         def fake_call(op: str, params: list[tuple[str, str]] | None = None):
-            captured["calls"].append((op, params or []))
             if op == "getTrsBySysid":
                 return by_sysid
             if op == "getTrsDetails":
@@ -139,11 +136,50 @@ class TestFindSystemByWacnSysid:
 
         import types
         client._call = types.MethodType(lambda self, *a, **k: fake_call(*a, **k), client)
-        sys = client.find_system_by_wacn_sysid("BEE00", "1A4")
-        assert sys is not None
-        assert sys.sid == 200
+        systems = client.find_systems_by_wacn_sysid("BEE00", "1A4")
+        assert len(systems) == 1
+        assert systems[0].sid == 200
 
-    def test_no_match_returns_none(self, monkeypatch):
+    def test_returns_all_matches_when_multiple_share_wacn_sysid(self, monkeypatch):
+        # Russ's bug: RR can list more than one system carrying the same
+        # WACN/SYSID (e.g. two MS county networks both on 92448/00A).
+        # find_systems_* must return ALL matches so the caller can
+        # disambiguate — the old singular variant silently picked the first.
+        by_sysid = _xml_to_body("""
+            <getTrsBySysidReturn>
+              <TrsListDef><sid>8004</sid></TrsListDef>
+              <TrsListDef><sid>9999</sid></TrsListDef>
+            </getTrsBySysidReturn>
+        """)
+        details_oktibbeha = _xml_to_body("""
+            <getTrsDetailsReturn>
+              <sName>Oktibbeha County</sName>
+              <sysid><TrsSysid><wacn>92448</wacn><sysid>00A</sysid></TrsSysid></sysid>
+            </getTrsDetailsReturn>
+        """)
+        details_noxubee = _xml_to_body("""
+            <getTrsDetailsReturn>
+              <sName>Noxubee County P25</sName>
+              <sysid><TrsSysid><wacn>92448</wacn><sysid>00A</sysid></TrsSysid></sysid>
+            </getTrsDetailsReturn>
+        """)
+        client = RRClient(username="u", password="p", appkey="x")
+
+        def fake_call(op: str, params=None):
+            if op == "getTrsBySysid":
+                return by_sysid
+            if op == "getTrsDetails":
+                sid = dict(params or [])["sid"]
+                return details_oktibbeha if sid == "8004" else details_noxubee
+            raise AssertionError(op)
+
+        import types
+        client._call = types.MethodType(lambda self, *a, **k: fake_call(*a, **k), client)
+        systems = client.find_systems_by_wacn_sysid("92448", "00A")
+        assert {s.sid for s in systems} == {8004, 9999}
+        assert {s.name for s in systems} == {"Oktibbeha County", "Noxubee County P25"}
+
+    def test_no_match_returns_empty_list(self, monkeypatch):
         by_sysid = _xml_to_body("""
             <getTrsBySysidReturn>
               <TrsListDef><sid>100</sid></TrsListDef>
@@ -159,7 +195,7 @@ class TestFindSystemByWacnSysid:
             "getTrsBySysid": by_sysid,
             "getTrsDetails": details,
         })
-        assert client.find_system_by_wacn_sysid("BEE00", "1A4") is None
+        assert client.find_systems_by_wacn_sysid("BEE00", "1A4") == []
 
     def test_caches_result(self, monkeypatch):
         by_sysid = _xml_to_body("""
@@ -183,10 +219,10 @@ class TestFindSystemByWacnSysid:
         import types
         client._call = types.MethodType(lambda self, *a, **k: fake_call(*a, **k), client)
 
-        client.find_system_by_wacn_sysid("BEE00", "1A4")
+        client.find_systems_by_wacn_sysid("BEE00", "1A4")
         first = call_count["n"]
         # Second call hits cache
-        client.find_system_by_wacn_sysid("BEE00", "1A4")
+        client.find_systems_by_wacn_sysid("BEE00", "1A4")
         assert call_count["n"] == first
 
 

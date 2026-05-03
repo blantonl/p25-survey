@@ -151,6 +151,15 @@ class EnrichmentResult:
 def enrich_record(record: SurveyRecord, client: RRClient) -> EnrichmentResult:
     """Look up a single record in RR and produce an EnrichmentResult.
 
+    Multi-stage matching:
+      1. WACN/SYSID → list of candidate systems. RR sometimes lists more
+         than one distinct system carrying the same WACN/SYSID (e.g. two
+         single-site Mississippi county networks both running 92448/00A).
+      2. For each candidate, try to resolve the decoded RFSS/Site (with
+         NAC disambiguation when one system has multiple subsystems).
+      3. Pick the candidate(s) that yielded a site_match. Exactly one →
+         that's our result. Zero or many → flag ambiguous and explain.
+
     Defensive against partial records (e.g. WACN seen but SYSID not yet) —
     such records get an empty EnrichmentResult with a note.
     """
@@ -161,34 +170,78 @@ def enrich_record(record: SurveyRecord, client: RRClient) -> EnrichmentResult:
     sysid_hex = format(record.sysid, "03X")
 
     try:
-        system = client.find_system_by_wacn_sysid(wacn_hex, sysid_hex)
+        candidate_systems = client.find_systems_by_wacn_sysid(wacn_hex, sysid_hex)
     except RRError as exc:
         return EnrichmentResult(notes=[f"RR lookup failed: {exc}"])
 
-    if system is None:
+    if not candidate_systems:
         return EnrichmentResult(
             system_match=False,
             notes=[f"new system: WACN {wacn_hex} / SYSID {sysid_hex} not found in RadioReference"],
         )
 
+    # If RFSS/Site weren't decoded we can't disambiguate among candidates.
+    # Fall back to the first match and surface the others in a note so the
+    # admin knows the system attribution may be wrong.
+    if record.rfss_id is None or record.site_id is None:
+        first = candidate_systems[0]
+        result = EnrichmentResult(
+            system_match=True,
+            rr_system_name=first.name,
+            rr_sid=first.sid,
+        )
+        result.notes.append("RFSS/Site not decoded; can't match site-level data")
+        if len(candidate_systems) > 1:
+            others = ", ".join(f"{s.name!r} (sid={s.sid})" for s in candidate_systems[1:])
+            result.notes.append(
+                f"WACN {wacn_hex}/SYSID {sysid_hex} matches multiple RR systems; "
+                f"reporting against first: {first.name!r} (sid={first.sid}); also: {others}"
+            )
+        return result
+
+    # Try to resolve the site against each candidate system.
+    resolved: list[EnrichmentResult] = []
+    per_candidate_state: list[tuple[RRSystem, list[RRSite], bool]] = []
+    for system in candidate_systems:
+        try:
+            sites = client.get_sites(system.sid)
+        except RRError as exc:
+            # Note but don't abort — try the other candidates.
+            per_candidate_state.append((system, [], False))
+            continue
+        site, ambiguous = _find_site(sites, record.rfss_id, record.site_id, record.nac)
+        per_candidate_state.append((system, sites, ambiguous))
+        if site is not None:
+            resolved.append(_build_site_match(record, system, sites, site))
+
+    if len(resolved) == 1:
+        return resolved[0]
+
+    if len(resolved) > 1:
+        # More than one RR system has this WACN/SYSID *and* an RFSS/Site
+        # match. Genuinely ambiguous — surface the candidates and refuse to
+        # pick. Very rare in practice but worth being explicit about.
+        first = resolved[0]
+        first.ambiguous_site = True
+        names = ", ".join(f"{r.rr_system_name!r} (sid={r.rr_sid})" for r in resolved)
+        first.notes.append(
+            f"ambiguous: WACN {wacn_hex}/SYSID {sysid_hex} matches multiple RR systems "
+            f"that all have RFSS {record.rfss_id} / Site {record.site_id}: {names}"
+        )
+        return first
+
+    # No site_match in any candidate. Three sub-cases:
+    first = candidate_systems[0]
     result = EnrichmentResult(
         system_match=True,
-        rr_system_name=system.name,
-        rr_sid=system.sid,
+        rr_system_name=first.name,
+        rr_sid=first.sid,
     )
 
-    if record.rfss_id is None or record.site_id is None:
-        result.notes.append("RFSS/Site not decoded; can't match site-level data")
-        return result
-
-    try:
-        sites = client.get_sites(system.sid)
-    except RRError as exc:
-        result.notes.append(f"could not fetch sites for sid={system.sid}: {exc}")
-        return result
-
-    site, ambiguous = _find_site(sites, record.rfss_id, record.site_id, record.nac)
-    if site is None:
+    # 3a. Some candidate had a within-system multi-subsystem ambiguity
+    #     (same RFSS/Site number on multiple subsystems within one RR sid;
+    #     NAC didn't pick one). Surface that case explicitly.
+    for system, sites, ambiguous in per_candidate_state:
         if ambiguous:
             result.ambiguous_site = True
             nac_hex = format(record.nac, "03X") if record.nac is not None else "—"
@@ -203,26 +256,49 @@ def enrich_record(record: SurveyRecord, client: RRClient) -> EnrichmentResult:
                 f"decoded NAC {nac_hex} doesn't match any candidate "
                 f"(RR has NAC {candidate_nacs})"
             )
-        else:
-            result.notes.append(
-                f"new site: RFSS {record.rfss_id} / Site {record.site_id} not in "
-                f"RR for system {system.name!r} (sid={system.sid})"
-            )
+            return result
+
+    # 3b. Multiple candidate systems share this WACN/SYSID but none has
+    #     this RFSS/Site. Russ's case: we can't tell which of the
+    #     candidate systems the new site would belong to, so flag rather
+    #     than falsely attribute it to whichever returned first.
+    if len(candidate_systems) > 1:
+        result.ambiguous_site = True
+        names = ", ".join(f"{s.name!r} (sid={s.sid})" for s in candidate_systems)
+        result.notes.append(
+            f"ambiguous: WACN {wacn_hex}/SYSID {sysid_hex} matches multiple RR systems "
+            f"({names}) but RFSS {record.rfss_id} / Site {record.site_id} isn't in any "
+            f"of them — can't tell which system this would be a new site for"
+        )
         return result
 
-    result.site_match = True
-    result.rr_site_description = site.description or None
-    result.rr_site_location = site.location or None
-    result.rr_site_county = site.county or None
-    result.rr_site_nac = site.nac or None
-    result.rr_site_lat = site.lat
-    result.rr_site_lon = site.lon
-    result.rr_site_licenses = list(site.licenses)
+    # 3c. Single candidate, no site found. Genuine new-site case.
+    result.notes.append(
+        f"new site: RFSS {record.rfss_id} / Site {record.site_id} not in "
+        f"RR for system {first.name!r} (sid={first.sid})"
+    )
+    return result
 
-    # Frequency comparison
+
+def _build_site_match(record: SurveyRecord, system: RRSystem,
+                      sites: list[RRSite], site: RRSite) -> EnrichmentResult:
+    """Build a fully-populated EnrichmentResult once we've matched a site."""
+    result = EnrichmentResult(
+        system_match=True,
+        rr_system_name=system.name,
+        rr_sid=system.sid,
+        site_match=True,
+        rr_site_description=site.description or None,
+        rr_site_location=site.location or None,
+        rr_site_county=site.county or None,
+        rr_site_nac=site.nac or None,
+        rr_site_lat=site.lat,
+        rr_site_lon=site.lon,
+        rr_site_licenses=list(site.licenses),
+    )
+
     cc_freqs = site.control_freqs_hz()
     if cc_freqs:
-        # Find the closest expected CC freq to what we decoded
         expected = min(cc_freqs, key=lambda f: abs(f - record.freq_hz))
         offset = record.freq_hz - expected
         result.cc_freq_offset = FreqOffset(

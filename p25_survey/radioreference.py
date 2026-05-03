@@ -176,13 +176,23 @@ class RRClient:
                           f"Set P25_SURVEY_RR_DEBUG=1 to dump raw XML.")
         return RRUser(username=username, sub_expire_date=sub_expire)
 
-    def find_system_by_wacn_sysid(self, wacn_hex: str, sysid_hex: str) -> RRSystem | None:
-        """Look up a system by P25 WACN + SYSID. Returns the matching RRSystem
-        (with sid populated) or None.
+    def find_systems_by_wacn_sysid(self, wacn_hex: str, sysid_hex: str) -> list[RRSystem]:
+        """Look up all systems carrying a given P25 WACN + SYSID.
+
+        Returns every matching RRSystem (with sid populated), in the order
+        getTrsBySysid returned them. Empty list when no RR system claims
+        this WACN/SYSID.
+
+        Plural rather than singular because RR sometimes lists more than
+        one distinct system under the same WACN/SYSID — typically when the
+        same identity is reused across neighboring counties (e.g. multiple
+        Mississippi single-site county networks sharing 92448/00A). The
+        caller has to disambiguate by RFSS/Site or NAC; we can't decide
+        here.
 
         getTrsBySysid(sysid) returns a SOAP-ENC:Array (typed
         TrsListDef[N]). RR encodes array members as <item xsi:type="tns:TrsListDef">.
-        We then fetch getTrsDetails for each candidate to find the one
+        We then fetch getTrsDetails for each candidate and keep those
         whose sysid array carries our WACN.
         """
         cache_key = ("wacn_sysid", wacn_hex.upper(), sysid_hex.upper())
@@ -201,14 +211,14 @@ class RRClient:
                     pass
 
         # Step 2: filter by WACN via getTrsDetails on each candidate.
+        matches: list[RRSystem] = []
         for sid in candidates:
             sys = self.get_system_details(sid)
             if sys.has_wacn_sysid(wacn_hex, sysid_hex):
-                self._cache[cache_key] = sys
-                return sys
+                matches.append(sys)
 
-        self._cache[cache_key] = None
-        return None
+        self._cache[cache_key] = matches
+        return matches
 
     def get_system_details(self, sid: int) -> RRSystem:
         cache_key = ("trs_details", sid)

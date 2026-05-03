@@ -20,6 +20,18 @@ def _hex_or_dash(value: int | None, width: int) -> str:
     return format(value, f"0{width}X") if value is not None else "—"
 
 
+def _phase2_title(checked: int, total: int, controls: int, skipped: int) -> str:
+    """Live-table title showing real progress, controls found, and resume skips.
+
+    `checked` must include candidates hidden by --hide-no-cc — the visible
+    row count alone underreports progress (Russ's report).
+    """
+    return (f"Phase 2 — P25 decode  "
+            f"[{checked}/{total} done, "
+            f"{controls} control channels found, "
+            f"{skipped} skipped via resume]")
+
+
 def _truncate(s: str, max_len: int) -> str:
     if len(s) <= max_len:
         return s
@@ -217,9 +229,12 @@ class _RichDisplay(AbstractContextManager):
 
     def _render(self):
         from rich.console import Group  # noqa: PLC0415
-        title = (f"Phase 2 — P25 decode  "
-                 f"[{len(self._rows)}/{self._total} done, "
-                 f"{self._skipped} skipped via resume]")
+        # Total checked = visible rows + hidden no-cc rows; controls found
+        # is everything that isn't no-cc. Without `+ _hidden`, `--hide-no-cc`
+        # makes the progress counter freeze at the CC count.
+        checked = len(self._rows) + self._hidden
+        controls = sum(1 for _, status in self._rows if status != "no-cc")
+        title = _phase2_title(checked, self._total, controls, self._skipped)
         table = self._Table(title=title, show_header=True, header_style="bold")
         for h, justify in zip(_HEADERS, (
             "right", "right", "right", "right", "right", "right", "right",

@@ -26,25 +26,46 @@ from p25_survey.survey import NeighborSite, SurveyRecord
 
 
 class FakeClient:
-    """Stand-in for RRClient with just the methods enrich uses."""
+    """Stand-in for RRClient with just the methods enrich uses.
 
-    def __init__(self, system: RRSystem | None, sites: list[RRSite] | None = None,
+    Single-system convenience: pass `system=` and `sites=`. For the
+    multi-system case (multiple RR systems sharing a WACN/SYSID), pass
+    `systems=[...]` and `sites_by_sid={sid: [RRSite, ...]}`.
+    """
+
+    def __init__(self, system: RRSystem | None = None,
+                 sites: list[RRSite] | None = None,
+                 systems: list[RRSystem] | None = None,
+                 sites_by_sid: dict[int, list[RRSite]] | None = None,
                  raise_on_find: Exception | None = None,
                  raise_on_sites: Exception | None = None) -> None:
-        self._system = system
-        self._sites = sites or []
+        if systems is not None:
+            self._systems = systems
+        elif system is not None:
+            self._systems = [system]
+        else:
+            self._systems = []
+        if sites_by_sid is not None:
+            self._sites_by_sid = sites_by_sid
+        else:
+            self._sites_by_sid = {}
+            if self._systems and sites is not None:
+                self._sites_by_sid[self._systems[0].sid] = sites
+        self._sites_default = sites or []
         self._raise_find = raise_on_find
         self._raise_sites = raise_on_sites
 
-    def find_system_by_wacn_sysid(self, wacn_hex: str, sysid_hex: str) -> RRSystem | None:
+    def find_systems_by_wacn_sysid(self, wacn_hex: str, sysid_hex: str) -> list[RRSystem]:
         if self._raise_find:
             raise self._raise_find
-        return self._system
+        return list(self._systems)
 
     def get_sites(self, sid: int) -> list[RRSite]:
         if self._raise_sites:
             raise self._raise_sites
-        return self._sites
+        if sid in self._sites_by_sid:
+            return self._sites_by_sid[sid]
+        return self._sites_default
 
 
 # ---------------------------------------------------------------------------
@@ -196,6 +217,100 @@ class TestMultiSubsystemDisambiguation:
         client = FakeClient(system=_system(), sites=sites)
         result = enrich_record(_record(), client)
         assert result.site_match
+
+
+class TestMultiSystemSameWacnSysid:
+    """Russ's third bug: multiple RR systems can share the same WACN/SYSID
+    (e.g. two MS county networks both running 92448/00A). Old code picked
+    the first system returned and reported a false-positive "new site"
+    submission against it. New behavior: try each candidate, pick the one
+    whose sites contain the decoded RFSS/Site, flag ambiguous when
+    disambiguation isn't possible."""
+
+    def _two_county_systems(self):
+        return [
+            RRSystem(sid=8004, name="Oktibbeha County", sys_type=2, sys_flavor=3,
+                     sysid_entries=[RRSysidEntry(wacn="92448", sysid="00A")]),
+            RRSystem(sid=8005, name="Noxubee County P25", sys_type=2, sys_flavor=3,
+                     sysid_entries=[RRSysidEntry(wacn="92448", sysid="00A")]),
+        ]
+
+    def test_picks_system_that_has_the_site(self):
+        # Russ's actual case: RFSS 9 / Site 9 is the Macon site on Noxubee
+        # (sid=8005). Oktibbeha (sid=8004) has different sites. We should
+        # match against Noxubee, not falsely report a new site for Oktibbeha.
+        systems = self._two_county_systems()
+        sites_by_sid = {
+            8004: [_site(rfss=1, site_number=1, freqs_hz=[852_400_000],
+                         description="Starkville")],
+            8005: [_site(rfss=9, site_number=9, freqs_hz=[852_400_000],
+                         description="Macon")],
+        }
+        client = FakeClient(systems=systems, sites_by_sid=sites_by_sid)
+        rec = _record(freq_hz=852_400_000, wacn=0x92448, sysid=0x00A,
+                      rfss_id=9, site_id=9)
+        result = enrich_record(rec, client)
+        assert result.system_match
+        assert result.site_match
+        assert result.rr_sid == 8005
+        assert result.rr_system_name == "Noxubee County P25"
+        assert result.rr_site_description == "Macon"
+        assert result.cc_freq_in_db
+
+    def test_ambiguous_when_no_system_has_the_site(self):
+        # Hypothetical: RFSS 9 / Site 9 truly isn't in either system's
+        # roster. Old code would've reported "new site for Oktibbeha"
+        # (whichever returned first). We can't tell which system the new
+        # site belongs to — flag rather than guess.
+        systems = self._two_county_systems()
+        sites_by_sid = {
+            8004: [_site(rfss=1, site_number=1, freqs_hz=[852_400_000])],
+            8005: [_site(rfss=2, site_number=2, freqs_hz=[852_500_000])],
+        }
+        client = FakeClient(systems=systems, sites_by_sid=sites_by_sid)
+        rec = _record(wacn=0x92448, sysid=0x00A, rfss_id=9, site_id=9)
+        result = enrich_record(rec, client)
+        assert result.system_match
+        assert not result.site_match
+        assert result.ambiguous_site
+        note = " ".join(result.notes)
+        assert "Oktibbeha County" in note
+        assert "Noxubee County P25" in note
+        assert "isn't in any" in note
+
+    def test_ambiguous_when_multiple_systems_have_the_site(self):
+        # Pathological but worth catching: both candidate systems have a
+        # site at RFSS/Site (and NAC matches both). We can't pick between
+        # them — refuse to silently match one.
+        systems = self._two_county_systems()
+        sites_by_sid = {
+            8004: [_site(rfss=9, site_number=9, freqs_hz=[852_400_000],
+                         description="Some Oktibbeha site", nac="00A")],
+            8005: [_site(rfss=9, site_number=9, freqs_hz=[852_500_000],
+                         description="Macon", nac="00A")],
+        }
+        client = FakeClient(systems=systems, sites_by_sid=sites_by_sid)
+        rec = _record(wacn=0x92448, sysid=0x00A, rfss_id=9, site_id=9)
+        rec.nac = 0x00A
+        result = enrich_record(rec, client)
+        assert result.ambiguous_site
+        note = " ".join(result.notes)
+        assert "matches multiple RR systems" in note
+
+    def test_single_system_no_site_still_reports_new_site(self):
+        # Regression check: when only ONE candidate system exists and the
+        # RFSS/Site isn't there, that's a genuine new-site case (the
+        # original v0.2/v0.3 behavior we don't want to break).
+        systems = [RRSystem(sid=42, name="Solo System", sys_type=2, sys_flavor=3,
+                            sysid_entries=[RRSysidEntry(wacn="BEE00", sysid="1A4")])]
+        sites_by_sid = {42: [_site(rfss=1, site_number=1, freqs_hz=[851_006_250])]}
+        client = FakeClient(systems=systems, sites_by_sid=sites_by_sid)
+        rec = _record(rfss_id=9, site_id=9)
+        result = enrich_record(rec, client)
+        assert result.system_match
+        assert not result.site_match
+        assert not result.ambiguous_site
+        assert any("new site" in n for n in result.notes)
 
 
 # ---------------------------------------------------------------------------
