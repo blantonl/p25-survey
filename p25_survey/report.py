@@ -52,7 +52,7 @@ def _fmt_rr(record: SurveyRecord) -> str:
         return ""
     sys_name = rr.get("rr_system_name") or "(unknown)"
     if not rr.get("site_match"):
-        return f"RR: {sys_name} — NEW SITE for RFSS/Site"
+        return f"RR: {sys_name} — Unidentified RFSS/Site"
     parts = [f"RR: {sys_name}"]
     if rr.get("rr_site_description"):
         parts.append(rr["rr_site_description"])
