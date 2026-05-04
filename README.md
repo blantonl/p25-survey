@@ -16,6 +16,12 @@ For each control channel found, records:
 Outputs three files per scan: NDJSON survey, plain-text human-readable report,
 and a Markdown submission report listing data not yet in RadioReference.
 
+![Live scan of 851–866 MHz with RR enrichment](docs/images/live-scan-800mhz.png)
+
+The live console table updates per candidate as Phase 2 decodes; the `RR Match`
+column shows the matched RadioReference system + site (with frequency offset)
+or flags new sites / NAC mismatches as it goes.
+
 ## Quick start
 
 ```bash
