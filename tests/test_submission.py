@@ -48,6 +48,7 @@ class TestNothingToSubmit:
         enr = EnrichmentResult(
             system_match=True, site_match=True,
             rr_system_name="X", rr_sid=1,
+            rr_site_nac="293",
             cc_freq_offset=FreqOffset(decoded_hz=851_006_250,
                                       expected_hz=851_006_250,
                                       offset_hz=0, ppm=0.0),
@@ -211,6 +212,142 @@ class TestFreqMismatch:
         )
         text = render([rec], {rec.freq_hz: enr})
         assert "RR site NAC" not in text
+
+
+# ---------------------------------------------------------------------------
+# Section: site NAC mismatches
+# ---------------------------------------------------------------------------
+
+
+class TestSiteNacMismatch:
+    """Russ Mason's request: surface NAC mismatches even when freq matches.
+
+    Two cases: RR has no NAC populated for the site (many systems carry a
+    "PLEASE SUBMIT" note about missing NACs), and RR has a NAC that
+    disagrees with what we decoded.
+    """
+
+    def test_renders_when_rr_nac_differs(self):
+        # Russ's MSWIN example: decoded 2A0, RR has 2A1, freq matches.
+        rec = _record(freq_hz=854_212_500, nac=0x2A0, rfss_id=4, site_id=1)
+        enr = EnrichmentResult(
+            system_match=True, site_match=True,
+            rr_system_name="Mississippi Wireless Information Network (MSWIN)",
+            rr_site_description="DeSoto County Simulcast",
+            rr_site_nac="2A1",
+            cc_freq_offset=FreqOffset(decoded_hz=854_212_500,
+                                      expected_hz=854_212_500,
+                                      offset_hz=0, ppm=0.0),
+            cc_freq_in_db=True,
+        )
+        text = render([rec], {rec.freq_hz: enr})
+        assert "## Site NAC mismatches" in text
+        assert "Mississippi Wireless Information Network" in text
+        assert "DeSoto County Simulcast" in text
+        assert "RFSS 4 / Site 1" in text
+        assert "Decoded NAC: **2A0**" in text
+        assert "RR site NAC: **2A1**" in text
+        assert "submit a correction" in text
+        assert "Site NAC mismatches: **1**" in text
+
+    def test_renders_when_rr_nac_missing(self):
+        # Russ's Entergy example: decoded 640, RR has nothing for the site.
+        rec = _record(freq_hz=855_262_500, nac=0x640, rfss_id=2, site_id=65)
+        enr = EnrichmentResult(
+            system_match=True, site_match=True,
+            rr_system_name="Entergy",
+            rr_site_description="Cleveland, MS",
+            rr_site_nac=None,
+            cc_freq_offset=FreqOffset(decoded_hz=855_262_500,
+                                      expected_hz=855_262_500,
+                                      offset_hz=0, ppm=0.0),
+            cc_freq_in_db=True,
+        )
+        text = render([rec], {rec.freq_hz: enr})
+        assert "## Site NAC mismatches" in text
+        assert "Entergy" in text
+        assert "Cleveland, MS" in text
+        assert "Decoded NAC: **640**" in text
+        assert "*(not listed)*" in text
+        assert "submit the decoded NAC" in text
+
+    def test_treats_blank_string_as_missing(self):
+        rec = _record(nac=0x640)
+        enr = EnrichmentResult(
+            system_match=True, site_match=True,
+            rr_system_name="X",
+            rr_site_nac="   ",  # whitespace-only counts as not listed
+            cc_freq_offset=FreqOffset(decoded_hz=rec.freq_hz, expected_hz=rec.freq_hz,
+                                      offset_hz=0, ppm=0.0),
+            cc_freq_in_db=True,
+        )
+        text = render([rec], {rec.freq_hz: enr})
+        assert "## Site NAC mismatches" in text
+        assert "*(not listed)*" in text
+
+    def test_omits_when_nacs_match(self):
+        rec = _record(nac=0x293)
+        enr = EnrichmentResult(
+            system_match=True, site_match=True,
+            rr_system_name="X",
+            rr_site_nac="293",
+            cc_freq_offset=FreqOffset(decoded_hz=rec.freq_hz, expected_hz=rec.freq_hz,
+                                      offset_hz=0, ppm=0.0),
+            cc_freq_in_db=True,
+        )
+        text = render([rec], {rec.freq_hz: enr})
+        assert "## Site NAC mismatches" not in text
+        assert "Site NAC mismatches: **0**" in text
+
+    def test_normalizes_leading_zeros_and_case(self):
+        # RR sometimes has "0x293" or "293" with no padding; decoded is always 3-hex.
+        rec = _record(nac=0x293)
+        enr = EnrichmentResult(
+            system_match=True, site_match=True, rr_system_name="X",
+            rr_site_nac="0293",  # leading zero — still equal to 0x293
+            cc_freq_offset=FreqOffset(decoded_hz=rec.freq_hz, expected_hz=rec.freq_hz,
+                                      offset_hz=0, ppm=0.0),
+            cc_freq_in_db=True,
+        )
+        text = render([rec], {rec.freq_hz: enr})
+        assert "## Site NAC mismatches" not in text
+
+    def test_skips_when_decoded_nac_missing(self):
+        rec = _record(nac=None)
+        enr = EnrichmentResult(
+            system_match=True, site_match=True, rr_system_name="X",
+            rr_site_nac="293",
+            cc_freq_offset=FreqOffset(decoded_hz=rec.freq_hz, expected_hz=rec.freq_hz,
+                                      offset_hz=0, ppm=0.0),
+            cc_freq_in_db=True,
+        )
+        text = render([rec], {rec.freq_hz: enr})
+        # Without a decoded NAC, we can't claim mismatch.
+        assert "## Site NAC mismatches" not in text
+
+    def test_skips_partial_decode(self):
+        rec = _record(nac=0x640)
+        rec.complete = False
+        enr = EnrichmentResult(
+            system_match=True, site_match=True, rr_system_name="X",
+            rr_site_nac="2A1",
+            cc_freq_offset=FreqOffset(decoded_hz=rec.freq_hz, expected_hz=rec.freq_hz,
+                                      offset_hz=0, ppm=0.0),
+            cc_freq_in_db=True,
+        )
+        text = render([rec], {rec.freq_hz: enr})
+        assert "## Site NAC mismatches" not in text
+        assert "Site NAC mismatches: **0**" in text
+
+    def test_skips_when_no_site_match(self):
+        # New-site case — the NAC mismatch isn't meaningful (no RR site to mismatch with).
+        rec = _record(nac=0x640)
+        enr = EnrichmentResult(
+            system_match=True, site_match=False,
+            rr_system_name="X", rr_site_nac=None,
+        )
+        text = render([rec], {rec.freq_hz: enr})
+        assert "## Site NAC mismatches" not in text
 
 
 # ---------------------------------------------------------------------------

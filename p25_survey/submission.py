@@ -9,11 +9,13 @@ file organized as:
   3. New sites (system in RR, but RFSS/Site not yet listed)
   4. New / corrected frequencies (site in RR, decoded freq not listed
      or off by more than 1 kHz)
-  5. New-site neighbor candidates (sites we observed in ADJ_STS_BCST
+  5. Site NAC mismatches (RR has no NAC listed, or the listed NAC
+     disagrees with what we decoded — the case Russ Mason flagged)
+  6. New-site neighbor candidates (sites we observed in ADJ_STS_BCST
      whose (RFSS, Site) ID isn't in RR's roster)
-  6. Neighbor CC mismatches (advertised neighbor CC freq either
+  7. Neighbor CC mismatches (advertised neighbor CC freq either
      missing from RR or not flagged as a control channel)
-  7. Observed neighbor roster (per-site enumeration of ADJ_STS_BCST
+  8. Observed neighbor roster (per-site enumeration of ADJ_STS_BCST
      neighbors with their RR site descriptions for spot-checking)
 
 Designed to be pasted into a forum thread or RR support ticket.
@@ -40,6 +42,25 @@ def _fmt_freq_mhz(freq_hz: int) -> str:
 
 def _hex(value: int | None, width: int) -> str:
     return format(value, f"0{width}X") if value is not None else "—"
+
+
+def _site_nac_diff(decoded_nac: int | None, rr_site_nac: str | None) -> str | None:
+    """Compare decoded vs RR site NAC. Returns "missing", "differs", or None.
+
+    "missing": RR's site has no NAC field populated; decoded NAC is a
+        candidate to fill in (many systems carry a "PLEASE SUBMIT" note
+        about missing NACs). "differs": RR has a NAC and it doesn't match
+        the decoded NAC. Comparison strips leading zeros and uppercases on
+        both sides — same normalization as `_find_site` in enrich.py.
+    """
+    if decoded_nac is None:
+        return None
+    rr_raw = (rr_site_nac or "").strip()
+    if not rr_raw:
+        return "missing"
+    decoded_hex = format(decoded_nac, "03X").upper().lstrip("0") or "0"
+    rr_norm = rr_raw.upper().lstrip("0") or "0"
+    return "differs" if rr_norm != decoded_hex else None
 
 
 def _wrote_section(out: StringIO, header: str, body_writer) -> bool:
@@ -84,6 +105,12 @@ def render(records: list[SurveyRecord],
         if r.complete
         and (e := enrichments.get(r.freq_hz)) and e.site_match and not e.cc_freq_in_db
     )
+    n_site_nac_mismatch = sum(
+        1 for r in records
+        if r.complete
+        and (e := enrichments.get(r.freq_hz)) and e.site_match
+        and _site_nac_diff(r.nac, e.rr_site_nac) is not None
+    )
     n_neighbor_new = sum(
         1 for r in records
         if r.complete
@@ -103,6 +130,7 @@ def render(records: list[SurveyRecord],
     out.write(f"- New systems candidates: **{n_new_system}**\n")
     out.write(f"- New sites candidates: **{n_new_site}**\n")
     out.write(f"- Frequency mismatches: **{n_freq_mismatch}**\n")
+    out.write(f"- Site NAC mismatches: **{n_site_nac_mismatch}**\n")
     out.write(f"- Sites with new-site neighbor candidates: **{n_neighbor_new}**\n")
     out.write(f"- Sites with neighbor CC mismatches: **{n_neighbor_cc_miss}**\n\n")
 
@@ -150,6 +178,15 @@ def render(records: list[SurveyRecord],
                         "a site reconfiguration RR hasn't picked up.\n\n",
                    lambda b: _write_freq_mismatches(b, records, enrichments))
 
+    # --- site NAC mismatches
+    _wrote_section(out, "## Site NAC mismatches\n\n"
+                        "Site is in RR and the CC frequency matches, but the decoded "
+                        "NAC differs from RR's value (or RR has no NAC listed for the "
+                        "site — many systems carry a \"PLEASE SUBMIT\" note about "
+                        "missing NACs). Each entry below is a candidate for a NAC "
+                        "submission or correction.\n\n",
+                   lambda b: _write_site_nac_mismatches(b, records, enrichments))
+
     # --- new-site neighbor candidates
     _wrote_section(out, "## New-site neighbor candidates\n\n"
                         "ADJ_STS_BCST neighbors whose (RFSS, Site) ID doesn't "
@@ -175,7 +212,7 @@ def render(records: list[SurveyRecord],
                    lambda b: _write_observed_neighbors(b, records, enrichments))
 
     if not any([n_new_system, n_new_site, n_freq_mismatch,
-                n_neighbor_new, n_neighbor_cc_miss]):
+                n_site_nac_mismatch, n_neighbor_new, n_neighbor_cc_miss]):
         out.write("## (Nothing to submit)\n\n"
                   "All decoded systems matched RadioReference cleanly. No submissions needed.\n")
 
@@ -272,6 +309,25 @@ def _write_freq_mismatches(out: StringIO, records: list[SurveyRecord],
 def _site_header(r: SurveyRecord, e: EnrichmentResult) -> str:
     desc = f" — {e.rr_site_description}" if e.rr_site_description else ""
     return f"### {e.rr_system_name}: RFSS {r.rfss_id} / Site {r.site_id}{desc}\n\n"
+
+
+def _write_site_nac_mismatches(out: StringIO, records: list[SurveyRecord],
+                               enrichments: dict[int, EnrichmentResult]) -> None:
+    for r in sorted(records, key=lambda x: x.freq_hz):
+        e = enrichments.get(r.freq_hz)
+        if e is None or not e.site_match or not r.complete:
+            continue
+        kind = _site_nac_diff(r.nac, e.rr_site_nac)
+        if kind is None:
+            continue
+        out.write(_site_header(r, e))
+        out.write(f"- Control channel: {_fmt_freq_mhz(r.freq_hz)}\n")
+        out.write(f"- Decoded NAC: **{_hex(r.nac, 3)}**\n")
+        if kind == "missing":
+            out.write(f"- RR site NAC: *(not listed)* — submit the decoded NAC\n")
+        else:
+            out.write(f"- RR site NAC: **{e.rr_site_nac}** — submit a correction\n")
+        out.write("\n")
 
 
 def _write_new_site_candidates(out: StringIO, records: list[SurveyRecord],
