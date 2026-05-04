@@ -621,10 +621,36 @@ def _run_gain_sweep(cfg: SurveyConfig, all_records: list, driver: str,
     return band_recs
 
 
+def _print_sdr_open_error(exc: "SdrOpenError", user_specified_driver: bool) -> None:
+    """Friendly diagnostic for an SDR-open failure.
+
+    Always prints the driver/args/underlying-message; appends an autoprobe
+    hint when the driver came from autoprobe rather than --sdr (so the
+    "you may have a different SDR plugged in" suggestion only shows up
+    when it's actually applicable).
+    """
+    print(file=sys.stderr)
+    print("error: failed to open SDR", file=sys.stderr)
+    print(f"  driver:      {exc.driver}", file=sys.stderr)
+    print(f"  device-args: {exc.device_args}", file=sys.stderr)
+    print(f"  underlying:  {exc.underlying}", file=sys.stderr)
+    print(file=sys.stderr)
+    print("Likely causes:", file=sys.stderr)
+    if not user_specified_driver:
+        print("  - Different SDR connected. Autoprobe defaulted to rtlsdr without "
+              "actually detecting hardware. If you have an Airspy or HackRF, "
+              "pass --sdr airspy or --sdr hackrf explicitly.", file=sys.stderr)
+    print("  - SDR is not plugged in, or busy with another process "
+          "(rtl_tcp, rtl_fm, op25, etc.).", file=sys.stderr)
+    print("  - Custom args needed (specific serial, bias-tee, sample type). "
+          "Use --device-args, e.g. --device-args 'rtl=00000001'.", file=sys.stderr)
+
+
 def _run_list_gains(args: argparse.Namespace) -> int:
     """Probe the SDR and print its gain stage table."""
-    from p25_survey.sdr import autoprobe_driver, probe_gains
+    from p25_survey.sdr import SdrOpenError, autoprobe_driver, probe_gains
 
+    user_driver = args.sdr is not None
     driver = args.sdr or autoprobe_driver()
     if driver is None:
         print("error: --list-gains needs an SDR driver — pass --sdr "
@@ -633,9 +659,8 @@ def _run_list_gains(args: argparse.Namespace) -> int:
 
     try:
         info = probe_gains(driver, device_args=args.device_args)
-    except Exception as exc:  # noqa: BLE001 — surface whatever osmosdr threw
-        print(f"error: could not open SDR ({driver}, args={args.device_args!r}): {exc}",
-              flush=True)
+    except SdrOpenError as exc:
+        _print_sdr_open_error(exc, user_specified_driver=user_driver)
         return 2
 
     print(f"SDR driver: {info.driver}")
@@ -673,8 +698,12 @@ def main(argv: list[str] | None = None) -> int:
         print("error: --thorough mode not yet implemented")
         return 2
 
+    from p25_survey.sdr import SdrOpenError  # noqa: PLC0415
     try:
         return _run_scan(cfg)
+    except SdrOpenError as exc:
+        _print_sdr_open_error(exc, user_specified_driver=args.sdr is not None)
+        return 2
     except KeyboardInterrupt:
         # Per-record fsync means whatever was decoded is already on disk.
         # Print a clear marker so the user knows the run was cut short.

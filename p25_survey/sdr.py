@@ -50,6 +50,39 @@ _DEFAULT_DEVICE_ARGS: dict[str, str] = {
 }
 
 
+class SdrOpenError(Exception):
+    """Raised when gr-osmosdr can't open the requested SDR.
+
+    Carries enough context (driver, args, and the underlying message) for
+    `main()` to print a friendly diagnostic instead of an osmosdr traceback.
+    Most commonly: wrong driver passed (or autoprobe defaulted to rtlsdr
+    when an Airspy/HackRF is actually plugged in), device in use by
+    another process, or the device just isn't connected.
+    """
+
+    def __init__(self, driver: str, device_args: str, underlying: str) -> None:
+        super().__init__(f"failed to open {driver} ({device_args}): {underlying}")
+        self.driver = driver
+        self.device_args = device_args
+        self.underlying = underlying
+
+
+def _open_osmosdr_source(driver: str, device_args: str):
+    """Open an osmosdr.source, converting RuntimeError into SdrOpenError.
+
+    osmosdr raises bare RuntimeError with messages like "Wrong rtlsdr
+    device index given." which give no hint that the user might just need
+    --sdr airspy. Wrapping at this single boundary lets the CLI emit a
+    useful error.
+    """
+    import osmosdr  # noqa: PLC0415
+
+    try:
+        return osmosdr.source(args=device_args)
+    except RuntimeError as exc:
+        raise SdrOpenError(driver=driver, device_args=device_args, underlying=str(exc)) from exc
+
+
 @dataclass(frozen=True)
 class SdrConfig:
     driver: str                       # rtlsdr | airspy | hackrf
@@ -95,14 +128,13 @@ class SdrCapture:
         """Tune to center_hz, capture n_samples complex IQ, return as complex64."""
         # Lazy imports — first capture brings GNU Radio in.
         from gnuradio import blocks, gr  # noqa: PLC0415  (intentional lazy import)
-        import osmosdr  # noqa: PLC0415
         from p25_survey._stderr import suppress_c_stderr  # noqa: PLC0415
 
         total = n_samples + max(0, self.config.settle_samples)
 
         with suppress_c_stderr():
             tb = gr.top_block()
-            src = osmosdr.source(args=self._device_args)
+            src = _open_osmosdr_source(self.config.driver, self._device_args)
             src.set_sample_rate(self._sample_rate)
             src.set_center_freq(int(center_hz))
             src.set_freq_corr(float(self.config.ppm), 0)
@@ -124,19 +156,24 @@ class SdrCapture:
         return data
 
 
-def autoprobe_driver() -> str | None:
-    """Return the first SDR driver whose device library is importable.
+#: Drivers we know how to open, in the order autoprobe will guess them.
+SUPPORTED_DRIVERS: tuple[str, ...] = ("rtlsdr", "airspy", "hackrf")
 
-    Useful when --sdr is omitted. Returns None if nothing detected.
+
+def autoprobe_driver() -> str | None:
+    """Default SDR driver when --sdr is omitted.
+
+    Note: this does *not* actually detect what hardware is plugged in —
+    gr-osmosdr's only way to do that is to try opening each candidate,
+    which is slow and clobbers the device for any other process. We just
+    confirm gr-osmosdr is importable and return rtlsdr as the most common
+    case. If the user has an Airspy/HackRF, the open will fail with
+    `SdrOpenError` and the CLI will tell them to pass --sdr explicitly.
     """
     try:
         import osmosdr  # noqa: F401, PLC0415
     except ImportError:
         return None
-
-    # We don't actually probe device presence here (gr-osmosdr's only way to
-    # do that involves opening each candidate). Just confirm gr-osmosdr is
-    # installed and return a sensible default.
     return "rtlsdr"
 
 
@@ -162,12 +199,11 @@ def probe_gains(driver: str, device_args: str | None = None) -> GainInfo:
     Caller must pass a driver that gr-osmosdr understands. Raises if the
     device cannot be opened.
     """
-    import osmosdr  # noqa: PLC0415
     from p25_survey._stderr import suppress_c_stderr  # noqa: PLC0415
 
     args = device_args or _DEFAULT_DEVICE_ARGS.get(driver, driver)
     with suppress_c_stderr():
-        src = osmosdr.source(args=args)
+        src = _open_osmosdr_source(driver, args)
         chan = 0
 
         def _to_range(r) -> tuple[float, float, float]:
