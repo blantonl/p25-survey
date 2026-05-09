@@ -30,6 +30,7 @@ from p25_survey.enrich import (
     BandOffsetSummary,
     EnrichmentResult,
     recommend_ppm,
+    site_nac_diff,
     summarize_band_offsets,
 )
 from p25_survey.survey import SurveyRecord
@@ -42,25 +43,6 @@ def _fmt_freq_mhz(freq_hz: int) -> str:
 
 def _hex(value: int | None, width: int) -> str:
     return format(value, f"0{width}X") if value is not None else "—"
-
-
-def _site_nac_diff(decoded_nac: int | None, rr_site_nac: str | None) -> str | None:
-    """Compare decoded vs RR site NAC. Returns "missing", "differs", or None.
-
-    "missing": RR's site has no NAC field populated; decoded NAC is a
-        candidate to fill in (many systems carry a "PLEASE SUBMIT" note
-        about missing NACs). "differs": RR has a NAC and it doesn't match
-        the decoded NAC. Comparison strips leading zeros and uppercases on
-        both sides — same normalization as `_find_site` in enrich.py.
-    """
-    if decoded_nac is None:
-        return None
-    rr_raw = (rr_site_nac or "").strip()
-    if not rr_raw:
-        return "missing"
-    decoded_hex = format(decoded_nac, "03X").upper().lstrip("0") or "0"
-    rr_norm = rr_raw.upper().lstrip("0") or "0"
-    return "differs" if rr_norm != decoded_hex else None
 
 
 def _wrote_section(out: StringIO, header: str, body_writer) -> bool:
@@ -109,7 +91,7 @@ def render(records: list[SurveyRecord],
         1 for r in records
         if r.complete
         and (e := enrichments.get(r.freq_hz)) and e.site_match
-        and _site_nac_diff(r.nac, e.rr_site_nac) is not None
+        and site_nac_diff(r.nac, e.rr_site_nac) is not None
     )
     n_neighbor_new = sum(
         1 for r in records
@@ -317,7 +299,7 @@ def _write_site_nac_mismatches(out: StringIO, records: list[SurveyRecord],
         e = enrichments.get(r.freq_hz)
         if e is None or not e.site_match or not r.complete:
             continue
-        kind = _site_nac_diff(r.nac, e.rr_site_nac)
+        kind = site_nac_diff(r.nac, e.rr_site_nac)
         if kind is None:
             continue
         out.write(_site_header(r, e))

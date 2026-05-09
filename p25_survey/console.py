@@ -13,6 +13,7 @@ import time
 from contextlib import AbstractContextManager
 from typing import Any
 
+from p25_survey.enrich import site_nac_diff
 from p25_survey.survey import SurveyRecord
 
 
@@ -40,11 +41,16 @@ def _truncate(s: str, max_len: int) -> str:
 
 def _rr_cell(record: SurveyRecord) -> str:
     """Cell summarizing the RR enrichment result. Format:
-        "✓ <SYSTEM NAME> · <SITE> · <ppm offset>"  for full match
-        "<SYSTEM NAME> · new RFSS/Site"            for new site
+        "✓ <SYSTEM NAME> · <SITE> · <ppm offset> [· <flags>]"  for full match
+        "<SYSTEM NAME> · new RFSS/Site"             for new site
         "NEW SYS (not in RR)"                       for unknown system
         ""                                          for no enrichment
-    Names truncated to keep the cell ≤ ~50 chars.
+
+    On full matches, additional submission-worthy findings are appended as
+    short flag tokens so a row scan reveals the same things the markdown
+    submission report calls out: FREQ≠ (decoded freq not listed), NAC?
+    (RR has no NAC for this site), NAC≠ (RR's NAC differs), +N nbr (N
+    new-site neighbor candidates), N nbr CC≠ (N neighbor CC mismatches).
     """
     rr = record.rr
     if not rr:
@@ -57,15 +63,31 @@ def _rr_cell(record: SurveyRecord) -> str:
     site_label = (rr.get("rr_site_description")
                   or (f"Site {record.site_id}" if record.site_id is not None else "Site"))
     site_label = _truncate(site_label, 16)
+    parts = [f"✓ {sys_name}", site_label]
+
     cc = rr.get("cc_freq_offset")
     if cc and not rr.get("cc_freq_in_db"):
         sign = "+" if cc.get("offset_hz", 0) >= 0 else ""
-        match = f"off {sign}{cc['offset_hz']} Hz"
+        parts.append(f"FREQ≠ off {sign}{cc['offset_hz']} Hz")
     elif cc:
-        match = f"{cc.get('ppm', 0.0):+.2f} ppm"
+        parts.append(f"{cc.get('ppm', 0.0):+.2f} ppm")
     else:
-        match = "✓"
-    return f"✓ {sys_name} · {site_label} · {match}"
+        parts.append("✓")
+
+    nac_diff = site_nac_diff(record.nac, rr.get("rr_site_nac"))
+    if nac_diff == "missing":
+        parts.append("NAC?")
+    elif nac_diff == "differs":
+        parts.append("NAC≠")
+
+    n_new_nbr = len(rr.get("neighbors_decoded_not_in_rr") or [])
+    if n_new_nbr:
+        parts.append(f"+{n_new_nbr} nbr")
+    n_nbr_cc = len(rr.get("neighbor_cc_mismatches") or [])
+    if n_nbr_cc:
+        parts.append(f"{n_nbr_cc} nbr CC≠")
+
+    return " · ".join(parts)
 
 
 def _row_values(record: SurveyRecord, status: str) -> tuple[str, ...]:

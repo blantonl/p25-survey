@@ -408,6 +408,25 @@ def _find_site(sites: Iterable[RRSite], rfss_id: int, site_id: int,
     return None, True
 
 
+def site_nac_diff(decoded_nac: int | None, rr_site_nac: str | None) -> str | None:
+    """Compare decoded vs RR site NAC. Returns "missing", "differs", or None.
+
+    "missing": RR's site has no NAC field populated; decoded NAC is a
+        candidate to fill in (many systems carry a "PLEASE SUBMIT" note
+        about missing NACs). "differs": RR has a NAC and it doesn't match
+        the decoded NAC. Comparison strips leading zeros and uppercases on
+        both sides — same normalization as `_find_site` above.
+    """
+    if decoded_nac is None:
+        return None
+    rr_raw = (rr_site_nac or "").strip()
+    if not rr_raw:
+        return "missing"
+    decoded_hex = format(decoded_nac, "03X").upper().lstrip("0") or "0"
+    rr_norm = rr_raw.upper().lstrip("0") or "0"
+    return "differs" if rr_norm != decoded_hex else None
+
+
 def _rr_neighbor_sites(all_sites: Iterable[RRSite],
                        exclude_site: RRSite) -> dict[tuple[int, int], RRSite]:
     """All sites in the system keyed by (rfss, site_number), minus current."""
