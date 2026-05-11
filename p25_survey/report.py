@@ -110,6 +110,10 @@ def render_record(record: SurveyRecord, out: StringIO) -> None:
                 f"[{kind}]\n"
             )
 
+    if record.secondary_cc:
+        freqs = ", ".join(_fmt_freq_mhz(f) for f in record.secondary_cc)
+        out.write(f"  Secondary CC: {freqs}\n")
+
     if record.neighbors:
         out.write(f"  Neighbors:    {len(record.neighbors)}\n")
         out.write(f"    {'Freq':<14} {'RFSS':>4} {'Site':>4} {'WACN':>6} {'SYS':>4}\n")

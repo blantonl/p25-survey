@@ -10,6 +10,9 @@ For each control channel found, records:
 - **Identity**: WACN, System ID, NAC, RFSS ID, Site ID
 - **Channel**: control channel frequency, full IDEN_UP band plan (FDMA + TDMA)
 - **Topology**: neighbor sites with frequencies (resolved through the band plan)
+- **Secondary CCs**: any alternate control channels advertised via SCCB (TSBK opcode 0x39).
+  Captured opportunistically — most sites never transmit SCCB, so this is usually empty.
+  When present, it lists the site's *currently advertised* secondary CC(s); it is not a rotation schedule.
 - **Signal quality**: RSSI (mean + peak, dBFS), BER, decode rate
 - **RR enrichment** (with `--rr`): system name, site description, frequency offset vs database, neighbor diff
 
@@ -103,8 +106,9 @@ Three phases per scan:
 2. **P25 decode** — for each candidate, run op25's P25 demodulator + frame
    assembler with adaptive dwell. Bail at `--confirm-timeout` (2 s default)
    if no P25 broadcasts arrive. Otherwise dwell up to `--max-dwell` (12 s)
-   while collecting NET_STS_BCST, RFSS_STS_BCST, IDEN_UP*, ADJ_STS_BCST
-   broadcasts; resolve neighbor frequencies through the captured band plan.
+   while collecting NET_STS_BCST, RFSS_STS_BCST, IDEN_UP*, ADJ_STS_BCST, and
+   SCCB (secondary CC) broadcasts; resolve neighbor and secondary-CC
+   frequencies through the captured band plan.
 
 3. **Optional gain sweep** (`--auto-gain`) — sweep 5 gain values × 4 s dwell
    on each confirmed CC, measure BER per gain, recommend the gain that

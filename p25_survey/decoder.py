@@ -41,6 +41,7 @@ from p25_survey.tsbk import (
     IdenUp,
     NetStsBcst,
     RfssStsBcst,
+    Sccb,
     parse_fdma_tsbk,
     parse_tdma_pdu,
 )
@@ -66,6 +67,11 @@ class _DwellState:
     freq_table: FreqTable = field(default_factory=FreqTable)
     neighbors: dict[int, NeighborSite] = field(default_factory=dict)  # keyed by channel_id
     pending_neighbors: list[AdjStsBcst] = field(default_factory=list)
+    # Secondary control channels advertised via SCCB (opcode 0x39). Rare in
+    # practice — most sites never transmit SCCB — but useful for re-acquisition
+    # on systems that rotate CCs. Keyed by channel_id → resolved freq_hz.
+    secondary_cc: dict[int, int] = field(default_factory=dict)
+    pending_secondary_cc: set[int] = field(default_factory=set)  # channel_ids
     last_neighbor_ts: float = 0.0
     frame_count: int = 0
     broadcast_count: int = 0   # NET_STS / RFSS_STS / IDEN_UP / ADJ_STS only
@@ -147,6 +153,15 @@ def _process_msg(msg, state: _DwellState) -> None:
                 else:
                     still_pending.append(adj)
             state.pending_neighbors = still_pending
+        if state.pending_secondary_cc:
+            still_pending_cc: set[int] = set()
+            for cid in state.pending_secondary_cc:
+                f = state.freq_table.channel_id_to_frequency(cid)
+                if f is not None:
+                    state.secondary_cc[cid] = f
+                else:
+                    still_pending_cc.add(cid)
+            state.pending_secondary_cc = still_pending_cc
     elif isinstance(parsed, NetStsBcst):
         state.wacn = parsed.wacn
         state.sysid = parsed.sysid
@@ -155,6 +170,16 @@ def _process_msg(msg, state: _DwellState) -> None:
         state.site_id = parsed.site_id
         if state.sysid is None:
             state.sysid = parsed.sysid
+    elif isinstance(parsed, Sccb):
+        # 0xFFFF is a null channel slot — only one secondary advertised.
+        for cid in (parsed.cc1_channel_id, parsed.cc2_channel_id):
+            if cid == 0xFFFF or cid in state.secondary_cc or cid in state.pending_secondary_cc:
+                continue
+            f = state.freq_table.channel_id_to_frequency(cid)
+            if f is not None:
+                state.secondary_cc[cid] = f
+            else:
+                state.pending_secondary_cc.add(cid)
     elif isinstance(parsed, AdjStsBcst):
         if parsed.channel_id in state.neighbors:
             return  # already recorded — don't reset settle timer
@@ -191,6 +216,11 @@ def _state_to_record(state: _DwellState, freq_hz: int, dwell_ms: int,
             f"{len(state.pending_neighbors)} neighbor(s) unresolved: "
             "no IDEN_UP for their channel-id table"
         )
+    if state.pending_secondary_cc:
+        notes.append(
+            f"{len(state.pending_secondary_cc)} secondary CC(s) unresolved: "
+            "no IDEN_UP for their channel-id table"
+        )
     signal_kwargs: dict[str, float] = {}
     if state.rssi_samples:
         signal_kwargs["rssi_dbfs_mean"] = round(sum(state.rssi_samples) / len(state.rssi_samples), 2)
@@ -216,6 +246,7 @@ def _state_to_record(state: _DwellState, freq_hz: int, dwell_ms: int,
         rfss_id=state.rfss_id,
         site_id=state.site_id,
         neighbors=sorted(state.neighbors.values(), key=lambda n: n.freq_hz),
+        secondary_cc=sorted(state.secondary_cc.values()),
         iden_up=iden_up,
         signal=signal,  # BER + decode_rate still null — needs op25 stats plumbing
         dwell_ms=dwell_ms,

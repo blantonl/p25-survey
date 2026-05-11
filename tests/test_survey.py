@@ -80,6 +80,21 @@ class TestJsonRoundTrip:
         rec2 = SurveyRecord.from_json_dict(d)
         assert rec2.wacn is None
 
+    def test_secondary_cc_round_trip(self):
+        rec = SurveyRecord(
+            freq_hz=851_006_250,
+            secondary_cc=[851_106_250, 851_206_250],
+        )
+        d = rec.to_json_dict()
+        assert d["secondary_cc"] == [851_106_250, 851_206_250]
+        rec2 = SurveyRecord.from_json_dict(d)
+        assert rec2.secondary_cc == [851_106_250, 851_206_250]
+
+    def test_secondary_cc_absent_defaults_to_empty(self):
+        # Survey files written before SCCB support won't have this key.
+        rec = SurveyRecord.from_json_dict({"freq_hz": 851_000_000})
+        assert rec.secondary_cc == []
+
     def test_neighbor_without_wacn_stays_none(self):
         rec = SurveyRecord(
             freq_hz=851_000_000,
@@ -201,6 +216,20 @@ class TestReport:
         # Both neighbor frequencies show up at 10 Hz precision
         assert "851.10625 MHz" in text
         assert "851.20625 MHz" in text
+
+    def test_renders_secondary_cc_when_present(self):
+        rec = _sample_record()
+        rec_with_sccb = SurveyRecord(
+            **{**rec.__dict__, "secondary_cc": [851_306_250, 851_406_250]}
+        )
+        text = render([rec_with_sccb])
+        assert "Secondary CC" in text
+        assert "851.30625 MHz" in text
+        assert "851.40625 MHz" in text
+
+    def test_omits_secondary_cc_when_empty(self):
+        text = render([_sample_record()])
+        assert "Secondary CC" not in text
 
     def test_partial_record_marked(self):
         text = render([_sample_record(complete=False)])

@@ -19,6 +19,7 @@ each write. A scan that crashes mid-run leaves a valid file.
 | `rfss_id` | int \| null | RFSS ID from RFSS_STS_BCST. |
 | `site_id` | int \| null | Site ID from RFSS_STS_BCST. |
 | `neighbors` | array | Adjacent sites — see below. |
+| `secondary_cc` | array of int | Resolved frequencies (Hz) advertised in SCCB (TSBK opcode 0x39) as alternate control channels for *this* site. Empty for the vast majority of sites — SCCB is uncommonly broadcast. Useful for re-acquisition on systems that rotate CCs; this is the *currently advertised* secondary, not a rotation schedule. |
 | `iden_up` | array | Channel-identifier (band plan) entries — see below. |
 | `signal` | object | Quality metrics. |
 | `dwell_ms` | int | Total ms spent decoding this candidate. |

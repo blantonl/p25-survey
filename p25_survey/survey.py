@@ -64,6 +64,7 @@ class SurveyRecord:
     rfss_id: int | None = None
     site_id: int | None = None
     neighbors: list[NeighborSite] = field(default_factory=list)
+    secondary_cc: list[int] = field(default_factory=list)
     iden_up: list[IdenUpEntry] = field(default_factory=list)
     signal: SignalQuality = field(default_factory=SignalQuality)
     dwell_ms: int = 0
@@ -113,6 +114,7 @@ class SurveyRecord:
             rfss_id=d.get("rfss_id"),
             site_id=d.get("site_id"),
             neighbors=neighbors,
+            secondary_cc=list(d.get("secondary_cc", []) or []),
             iden_up=iden_up,
             signal=signal,
             dwell_ms=d.get("dwell_ms", 0),
