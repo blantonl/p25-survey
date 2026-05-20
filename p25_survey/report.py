@@ -77,6 +77,9 @@ def _fmt_rr(record: SurveyRecord) -> str:
     elif nac_diff == "missing":
         parts.append(f"NAC MISMATCH: RR has none listed, "
                      f"decoded {_fmt_hex(record.nac, 3)}")
+    n_sec_cc = len(rr.get("secondary_cc_mismatches") or [])
+    if n_sec_cc:
+        parts.append(f"{n_sec_cc} secondary CC mismatch(es)")
     n_extra = len(rr.get("neighbors_decoded_not_in_rr") or [])
     n_cc_miss = len(rr.get("neighbor_cc_mismatches") or [])
     if n_extra:
@@ -84,6 +87,22 @@ def _fmt_rr(record: SurveyRecord) -> str:
     if n_cc_miss:
         parts.append(f"{n_cc_miss} neighbor CC mismatch(es)")
     return "; ".join(parts)
+
+
+def _fmt_neighbor_site(ref: dict | None) -> str:
+    """RR site description for a neighbor row, or a marker / empty string.
+
+    `ref` is one serialized NeighborRef dict from the enrichment's
+    observed_neighbors list. Returns "" when no enrichment matched this
+    neighbor (no site_match, or the record wasn't enriched).
+    """
+    if not ref:
+        return ""
+    if not ref.get("in_rr"):
+        return "(not in RR roster)"
+    bits = [b for b in (ref.get("description"), ref.get("location"),
+                        ref.get("county")) if b]
+    return " / ".join(bits)
 
 
 def render_record(record: SurveyRecord, out: StringIO) -> None:
@@ -119,18 +138,36 @@ def render_record(record: SurveyRecord, out: StringIO) -> None:
             )
 
     if record.secondary_cc:
-        freqs = ", ".join(_fmt_freq_mhz(f) for f in record.secondary_cc)
-        out.write(f"  Secondary CC: {freqs}\n")
+        rr = record.rr or {}
+        sec_miss = {m["freq_hz"]: m
+                    for m in (rr.get("secondary_cc_mismatches") or [])}
+        parts = []
+        for f in record.secondary_cc:
+            m = sec_miss.get(f)
+            if m is None:
+                parts.append(_fmt_freq_mhz(f))
+            elif m["kind"] == "missing_from_rr":
+                parts.append(f"{_fmt_freq_mhz(f)} [not in RR frequency list]")
+            else:
+                use = m.get("rr_use_code") or "(blank)"
+                parts.append(f"{_fmt_freq_mhz(f)} [in RR, use=\"{use}\" not control]")
+        out.write(f"  Secondary CC: {', '.join(parts)}\n")
 
     if record.neighbors:
+        rr = record.rr or {}
+        nbr_rr = {(ref.get("rfss_id"), ref.get("site_id")): ref
+                  for ref in (rr.get("observed_neighbors") or [])}
         out.write(f"  Neighbors:    {len(record.neighbors)}\n")
-        out.write(f"    {'Freq':<14} {'RFSS':>4} {'Site':>4} {'WACN':>6} {'SYS':>4}\n")
+        out.write(f"    {'Freq':<14} {'RFSS':>4} {'Site':>4} {'WACN':>6} "
+                  f"{'SYS':>4}  RR site\n")
         for n in sorted(record.neighbors, key=lambda x: x.freq_hz):
-            out.write(
+            site_txt = _fmt_neighbor_site(nbr_rr.get((n.rfss_id, n.site_id)))
+            row = (
                 f"    {_fmt_freq_mhz(n.freq_hz):<14} "
                 f"{n.rfss_id:>4} {n.site_id:>4} "
-                f"{_fmt_hex(n.wacn, 5):>6} {_fmt_hex(n.sysid, 3):>4}\n"
+                f"{_fmt_hex(n.wacn, 5):>6} {_fmt_hex(n.sysid, 3):>4}  {site_txt}"
             )
+            out.write(row.rstrip() + "\n")
     else:
         out.write("  Neighbors:    (none reported)\n")
 

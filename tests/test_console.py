@@ -121,13 +121,23 @@ class TestRRCell:
         cell = _rr_cell(_record(nac=0x1BB, rr=rr))
         assert "2 nbr CC≠" in cell
 
+    def test_secondary_cc_mismatch(self):
+        # Russ's request: SCCB secondary CC vs RR gets its own flag.
+        rr = self._full_match_rr(secondary_cc_mismatches=[
+            {"freq_hz": 851_500_000, "kind": "missing_from_rr", "rr_use_code": None},
+        ])
+        cell = _rr_cell(_record(nac=0x1BB, rr=rr))
+        assert "1 sec CC≠" in cell
+
     def test_multiple_flags_combine(self):
         rr = self._full_match_rr(
             rr_site_nac="",
+            secondary_cc_mismatches=[{"freq_hz": 851_500_000, "kind": "missing_from_rr"}],
             neighbors_decoded_not_in_rr=[{"freq_hz": 851_000_000, "rfss_id": 2, "site_id": 99}],
             neighbor_cc_mismatches=[{"kind": "not_listed"}],
         )
         cell = _rr_cell(_record(nac=0x1BB, rr=rr))
         assert "NAC?" in cell
+        assert "1 sec CC≠" in cell
         assert "+1 nbr" in cell
         assert "1 nbr CC≠" in cell

@@ -9,13 +9,15 @@ from p25_survey.enrich import (
     FreqOffset,
     NeighborCCMismatch,
     NeighborRef,
+    SecondaryCCMismatch,
 )
 from p25_survey.submission import render, render_file
 from p25_survey.survey import IdenUpEntry, NeighborSite, SignalQuality, SurveyRecord
 
 
 def _record(freq_hz=851_006_250, wacn=0xBEE00, sysid=0x1A4, nac=0x293,
-            rfss_id=1, site_id=7, neighbors_hz=None, idens=0):
+            rfss_id=1, site_id=7, neighbors_hz=None, idens=0,
+            secondary_cc=None):
     iden_up = [
         IdenUpEntry(iden=i, base_freq_hz=851_006_250, step_hz=12_500, offset_hz=-45_000_000)
         for i in range(idens)
@@ -28,6 +30,7 @@ def _record(freq_hz=851_006_250, wacn=0xBEE00, sysid=0x1A4, nac=0x293,
         neighbors=[
             NeighborSite(freq_hz=f, rfss_id=1, site_id=8) for f in (neighbors_hz or [])
         ],
+        secondary_cc=secondary_cc or [],
         signal=SignalQuality(rssi_dbfs_mean=-15.0, ber_pct_mean=0.0),
     )
 
@@ -440,6 +443,69 @@ class TestObservedNeighborSection:
         assert "County A" in text
         assert "RFSS 1 / Site 99" in text
         assert "not in RR roster" in text
+
+
+class TestSecondaryCCMismatchSection:
+    """Russ Mason's request: SCCB secondary CCs cross-checked against the
+    site's own RR frequency list, surfaced for existing and new sites."""
+
+    def test_renders_missing_from_rr(self):
+        rec = _record()
+        enr = EnrichmentResult(
+            system_match=True, site_match=True, rr_system_name="X",
+            cc_freq_offset=FreqOffset(decoded_hz=rec.freq_hz, expected_hz=rec.freq_hz,
+                                      offset_hz=0, ppm=0.0),
+            cc_freq_in_db=True,
+            secondary_cc_mismatches=[
+                SecondaryCCMismatch(freq_hz=851_500_000, kind="missing_from_rr"),
+            ],
+        )
+        text = render([rec], {rec.freq_hz: enr})
+        assert "## Secondary control-channel mismatches" in text
+        assert "851.50000 MHz" in text
+        assert "not in the site's RR frequency list" in text
+        assert "Sites with secondary CC mismatches: **1**" in text
+
+    def test_renders_not_marked_control(self):
+        rec = _record()
+        enr = EnrichmentResult(
+            system_match=True, site_match=True, rr_system_name="X",
+            cc_freq_offset=FreqOffset(decoded_hz=rec.freq_hz, expected_hz=rec.freq_hz,
+                                      offset_hz=0, ppm=0.0),
+            cc_freq_in_db=True,
+            secondary_cc_mismatches=[
+                SecondaryCCMismatch(freq_hz=851_500_000, kind="not_marked_control",
+                                    rr_use_code=""),
+            ],
+        )
+        text = render([rec], {rec.freq_hz: enr})
+        assert "## Secondary control-channel mismatches" in text
+        assert "should be \"d\" or \"a\"" in text
+
+    def test_omits_section_when_clean(self):
+        rec = _record()
+        enr = EnrichmentResult(
+            system_match=True, site_match=True, rr_system_name="X",
+            rr_site_nac="293",
+            cc_freq_offset=FreqOffset(decoded_hz=rec.freq_hz, expected_hz=rec.freq_hz,
+                                      offset_hz=0, ppm=0.0),
+            cc_freq_in_db=True,
+        )
+        text = render([rec], {rec.freq_hz: enr})
+        assert "## Secondary control-channel mismatches" not in text
+        assert "Sites with secondary CC mismatches: **0**" in text
+
+    def test_new_site_lists_secondary_cc(self):
+        # For a not-yet-listed site, the secondary CCs ride along in the
+        # new-site entry so whoever adds the site includes every CC.
+        rec = _record(secondary_cc=[851_500_000])
+        enr = EnrichmentResult(
+            system_match=True, site_match=False, rr_system_name="Statewide",
+        )
+        text = render([rec], {rec.freq_hz: enr})
+        assert "## New sites" in text
+        assert "Secondary control channels (SCCB)" in text
+        assert "851.50000 MHz" in text
 
 
 # ---------------------------------------------------------------------------

@@ -7,8 +7,10 @@ but had no annotation in the grep-able TXT report.
 
 from __future__ import annotations
 
-from p25_survey.report import _fmt_rr
-from p25_survey.survey import SurveyRecord
+from io import StringIO
+
+from p25_survey.report import _fmt_neighbor_site, _fmt_rr, render_record
+from p25_survey.survey import NeighborSite, SurveyRecord
 
 
 def _record(nac=None, rr=None) -> SurveyRecord:
@@ -53,8 +55,83 @@ class TestFmtRR:
         line = _fmt_rr(_record(nac=0x1BB, rr=rr))
         assert "NAC MISMATCH: RR has none listed, decoded 1BB" in line
 
-    def test_nac_annotation_grepable_via_rr_prefix(self):
-        # The whole finding rides on the "RR:" line Russ greps for.
-        rr = _full_match_rr(rr_site_nac="2A0")
+    def test_secondary_cc_mismatch_flagged_on_rr_line(self):
+        rr = _full_match_rr(secondary_cc_mismatches=[
+            {"freq_hz": 851_500_000, "kind": "missing_from_rr", "rr_use_code": None},
+        ])
         line = _fmt_rr(_record(nac=0x1BB, rr=rr))
-        assert line.startswith("RR:") and "NAC MISMATCH" in line
+        assert line.startswith("RR:")
+        assert "1 secondary CC mismatch(es)" in line
+
+
+def _full_record(*, secondary_cc=None, neighbors=None, rr=None) -> SurveyRecord:
+    return SurveyRecord(
+        freq_hz=851_012_500, wacn=0xBEE00, sysid=0x1B2, nac=0x1BB,
+        rfss_id=2, site_id=29,
+        secondary_cc=secondary_cc or [],
+        neighbors=neighbors or [],
+        rr=rr,
+    )
+
+
+def _rendered(record: SurveyRecord) -> str:
+    out = StringIO()
+    render_record(record, out)
+    return out.getvalue()
+
+
+class TestSecondaryCCInReport:
+    """Russ Mason's request: a secondary CC that RR is missing — or has
+    but doesn't flag as control — must be visible in the TXT report."""
+
+    def test_secondary_cc_line_marks_missing_from_rr(self):
+        rr = _full_match_rr(secondary_cc_mismatches=[
+            {"freq_hz": 851_500_000, "kind": "missing_from_rr", "rr_use_code": None},
+        ])
+        text = _rendered(_full_record(secondary_cc=[851_500_000], rr=rr))
+        assert "Secondary CC:" in text
+        assert "851.50000 MHz [not in RR frequency list]" in text
+
+    def test_secondary_cc_line_marks_not_marked_control(self):
+        rr = _full_match_rr(secondary_cc_mismatches=[
+            {"freq_hz": 851_500_000, "kind": "not_marked_control", "rr_use_code": ""},
+        ])
+        text = _rendered(_full_record(secondary_cc=[851_500_000], rr=rr))
+        assert 'use="(blank)" not control' in text
+
+    def test_clean_secondary_cc_renders_plain(self):
+        text = _rendered(_full_record(secondary_cc=[851_500_000],
+                                      rr=_full_match_rr()))
+        assert "Secondary CC: 851.50000 MHz\n" in text
+
+
+class TestNeighborNamesInReport:
+    """Russ Mason's request: neighbor site name/location, already in
+    submissions.md, should also appear in the TXT neighbor table."""
+
+    def test_neighbor_row_shows_rr_site_description(self):
+        rr = _full_match_rr(observed_neighbors=[
+            {"rfss_id": 2, "site_id": 30, "freq_hz": 851_100_000, "in_rr": True,
+             "description": "Hilltop", "location": "Anytown", "county": "County A"},
+        ])
+        rec = _full_record(
+            neighbors=[NeighborSite(freq_hz=851_100_000, rfss_id=2, site_id=30)],
+            rr=rr,
+        )
+        text = _rendered(rec)
+        assert "RR site" in text  # column header
+        assert "Hilltop / Anytown / County A" in text
+
+    def test_neighbor_not_in_rr_is_marked(self):
+        rr = _full_match_rr(observed_neighbors=[
+            {"rfss_id": 2, "site_id": 99, "freq_hz": 860_000_000, "in_rr": False,
+             "description": None, "location": None, "county": None},
+        ])
+        rec = _full_record(
+            neighbors=[NeighborSite(freq_hz=860_000_000, rfss_id=2, site_id=99)],
+            rr=rr,
+        )
+        assert "(not in RR roster)" in _rendered(rec)
+
+    def test_fmt_neighbor_site_handles_no_enrichment(self):
+        assert _fmt_neighbor_site(None) == ""

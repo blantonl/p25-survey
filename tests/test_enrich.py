@@ -100,7 +100,8 @@ def _record(freq_hz: int = 851_006_250,
             neighbors: list[NeighborSite] | None = None,
             neighbors_hz: list[int] | None = None,
             wacn: int | None = 0xBEE00, sysid: int | None = 0x1A4,
-            rfss_id: int | None = 1, site_id: int | None = 7) -> SurveyRecord:
+            rfss_id: int | None = 1, site_id: int | None = 7,
+            secondary_cc: list[int] | None = None) -> SurveyRecord:
     """Build a SurveyRecord for tests.
 
     `neighbors` takes explicit NeighborSite objects (preferred). The legacy
@@ -118,6 +119,7 @@ def _record(freq_hz: int = 851_006_250,
         wacn=wacn, sysid=sysid, nac=0x293,
         rfss_id=rfss_id, site_id=site_id,
         neighbors=neighbors,
+        secondary_cc=secondary_cc or [],
     )
 
 
@@ -522,6 +524,55 @@ class TestNeighborCCMismatches:
         )
         assert result.neighbor_cc_mismatches == []
         assert len(result.neighbors_decoded_not_in_rr) == 1
+
+
+class TestSecondaryCCMismatches:
+    """Russ Mason's request: cross-check this site's own SCCB-advertised
+    secondary control channels against the site's RR frequency list."""
+
+    def test_secondary_cc_missing_from_rr(self):
+        # Site 7 is in RR with CC 851.00625; SCCB advertises a secondary
+        # CC at 851.500 that isn't in the site's RR frequency list at all.
+        sites = [_site(rfss=1, site_number=7, freqs_hz=[851_006_250])]
+        client = FakeClient(system=_system(), sites=sites)
+        result = enrich_record(_record(secondary_cc=[851_500_000]), client)
+        assert len(result.secondary_cc_mismatches) == 1
+        m = result.secondary_cc_mismatches[0]
+        assert m.kind == "missing_from_rr"
+        assert m.freq_hz == 851_500_000
+
+    def test_secondary_cc_listed_but_not_marked_control(self):
+        # The secondary CC freq is in the site's RR list but tagged
+        # use="" (traffic) instead of "d"/"a".
+        from p25_survey.radioreference import RRSite, RRSiteFreq
+        site_7 = RRSite(
+            sid=42, site_db_id=700, site_number=7, rfss=1,
+            description="Site Seven",
+            frequencies=[
+                RRSiteFreq(freq_hz=851_006_250, use="d"),
+                RRSiteFreq(freq_hz=851_500_000, use=""),  # mistagged traffic
+            ],
+        )
+        client = FakeClient(system=_system(), sites=[site_7])
+        result = enrich_record(_record(secondary_cc=[851_500_000]), client)
+        assert len(result.secondary_cc_mismatches) == 1
+        m = result.secondary_cc_mismatches[0]
+        assert m.kind == "not_marked_control"
+        assert m.rr_use_code == ""
+
+    def test_secondary_cc_clean_when_listed_as_control(self):
+        # Secondary CC is in RR flagged as alternate control — no mismatch.
+        sites = [_site(rfss=1, site_number=7, freqs_hz=[851_006_250],
+                       alt_freqs_hz=[851_500_000])]
+        client = FakeClient(system=_system(), sites=sites)
+        result = enrich_record(_record(secondary_cc=[851_500_000]), client)
+        assert result.secondary_cc_mismatches == []
+
+    def test_no_secondary_cc_no_mismatch(self):
+        sites = [_site(rfss=1, site_number=7, freqs_hz=[851_006_250])]
+        client = FakeClient(system=_system(), sites=sites)
+        result = enrich_record(_record(), client)
+        assert result.secondary_cc_mismatches == []
 
 
 # ---------------------------------------------------------------------------

@@ -11,11 +11,14 @@ file organized as:
      or off by more than 1 kHz)
   5. Site NAC mismatches (RR has no NAC listed, or the listed NAC
      disagrees with what we decoded — the case Russ Mason flagged)
-  6. New-site neighbor candidates (sites we observed in ADJ_STS_BCST
+  6. Secondary control-channel mismatches (a secondary CC this site
+     advertised via SCCB whose freq is missing from RR or not flagged
+     as a control channel — Russ Mason's request)
+  7. New-site neighbor candidates (sites we observed in ADJ_STS_BCST
      whose (RFSS, Site) ID isn't in RR's roster)
-  7. Neighbor CC mismatches (advertised neighbor CC freq either
+  8. Neighbor CC mismatches (advertised neighbor CC freq either
      missing from RR or not flagged as a control channel)
-  8. Observed neighbor roster (per-site enumeration of ADJ_STS_BCST
+  9. Observed neighbor roster (per-site enumeration of ADJ_STS_BCST
      neighbors with their RR site descriptions for spot-checking)
 
 Designed to be pasted into a forum thread or RR support ticket.
@@ -93,6 +96,12 @@ def render(records: list[SurveyRecord],
         and (e := enrichments.get(r.freq_hz)) and e.site_match
         and site_nac_diff(r.nac, e.rr_site_nac) is not None
     )
+    n_secondary_cc_miss = sum(
+        1 for r in records
+        if r.complete
+        and (e := enrichments.get(r.freq_hz))
+        and e.site_match and e.secondary_cc_mismatches
+    )
     n_neighbor_new = sum(
         1 for r in records
         if r.complete
@@ -113,6 +122,7 @@ def render(records: list[SurveyRecord],
     out.write(f"- New sites candidates: **{n_new_site}**\n")
     out.write(f"- Frequency mismatches: **{n_freq_mismatch}**\n")
     out.write(f"- Site NAC mismatches: **{n_site_nac_mismatch}**\n")
+    out.write(f"- Sites with secondary CC mismatches: **{n_secondary_cc_miss}**\n")
     out.write(f"- Sites with new-site neighbor candidates: **{n_neighbor_new}**\n")
     out.write(f"- Sites with neighbor CC mismatches: **{n_neighbor_cc_miss}**\n\n")
 
@@ -169,6 +179,15 @@ def render(records: list[SurveyRecord],
                         "submission or correction.\n\n",
                    lambda b: _write_site_nac_mismatches(b, records, enrichments))
 
+    # --- secondary control-channel mismatches
+    _wrote_section(out, "## Secondary control-channel mismatches\n\n"
+                        "Each row is a secondary control channel this site "
+                        "advertised via SCCB whose frequency is either missing "
+                        "from the site's own RR frequency list, or listed but "
+                        "not flagged as a control channel (use code \"d\"/\"a\"). "
+                        "Both surface RR data gaps for an already-listed site.\n\n",
+                   lambda b: _write_secondary_cc_mismatches(b, records, enrichments))
+
     # --- new-site neighbor candidates
     _wrote_section(out, "## New-site neighbor candidates\n\n"
                         "ADJ_STS_BCST neighbors whose (RFSS, Site) ID doesn't "
@@ -194,7 +213,8 @@ def render(records: list[SurveyRecord],
                    lambda b: _write_observed_neighbors(b, records, enrichments))
 
     if not any([n_new_system, n_new_site, n_freq_mismatch,
-                n_site_nac_mismatch, n_neighbor_new, n_neighbor_cc_miss]):
+                n_site_nac_mismatch, n_secondary_cc_miss,
+                n_neighbor_new, n_neighbor_cc_miss]):
         out.write("## (Nothing to submit)\n\n"
                   "All decoded systems matched RadioReference cleanly. No submissions needed.\n")
 
@@ -223,6 +243,9 @@ def _write_new_systems(out: StringIO, records: list[SurveyRecord],
                   f"(NAC {_hex(r.nac, 3)})\n\n")
         out.write(f"- Discovered on: {_fmt_freq_mhz(r.freq_hz)}\n")
         out.write(f"- RFSS / Site: {r.rfss_id} / {r.site_id}\n")
+        if r.secondary_cc:
+            out.write(f"- Secondary control channels (SCCB): "
+                      f"{', '.join(_fmt_freq_mhz(f) for f in r.secondary_cc)}\n")
         if r.signal.rssi_dbfs_mean is not None:
             out.write(f"- Signal: RSSI {r.signal.rssi_dbfs_mean} dBFS, "
                       f"BER {r.signal.ber_pct_mean}%\n")
@@ -246,6 +269,9 @@ def _write_new_sites(out: StringIO, records: list[SurveyRecord],
             continue
         out.write(f"### {e.rr_system_name}: RFSS {r.rfss_id} / Site {r.site_id}\n\n")
         out.write(f"- Control channel: {_fmt_freq_mhz(r.freq_hz)}\n")
+        if r.secondary_cc:
+            out.write(f"- Secondary control channels (SCCB): "
+                      f"{', '.join(_fmt_freq_mhz(f) for f in r.secondary_cc)}\n")
         out.write(f"- NAC: {_hex(r.nac, 3)}\n")
         out.write(f"- WACN: {_hex(r.wacn, 5)}\n")
         out.write(f"- SYSID: {_hex(r.sysid, 3)}\n")
@@ -309,6 +335,28 @@ def _write_site_nac_mismatches(out: StringIO, records: list[SurveyRecord],
             out.write(f"- RR site NAC: *(not listed)* — submit the decoded NAC\n")
         else:
             out.write(f"- RR site NAC: **{e.rr_site_nac}** — submit a correction\n")
+        out.write("\n")
+
+
+def _write_secondary_cc_mismatches(out: StringIO, records: list[SurveyRecord],
+                                   enrichments: dict[int, EnrichmentResult]) -> None:
+    for r in sorted(records, key=lambda x: x.freq_hz):
+        e = enrichments.get(r.freq_hz)
+        if e is None or not e.site_match or not e.secondary_cc_mismatches:
+            continue
+        if not r.complete:
+            continue
+        out.write(_site_header(r, e))
+        out.write(f"- Decoded CC: {_fmt_freq_mhz(r.freq_hz)}\n")
+        for m in e.secondary_cc_mismatches:
+            freq = _fmt_freq_mhz(m.freq_hz)
+            if m.kind == "missing_from_rr":
+                out.write(f"    - secondary CC **{freq}** is not in the "
+                          f"site's RR frequency list\n")
+            elif m.kind == "not_marked_control":
+                use = m.rr_use_code or "(blank)"
+                out.write(f"    - secondary CC **{freq}** is listed but "
+                          f"`use=\"{use}\"` (should be \"d\" or \"a\")\n")
         out.write("\n")
 
 

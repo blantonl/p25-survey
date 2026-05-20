@@ -49,8 +49,9 @@ def _rr_cell(record: SurveyRecord) -> str:
     On full matches, additional submission-worthy findings are appended as
     short flag tokens so a row scan reveals the same things the markdown
     submission report calls out: FREQ≠ (decoded freq not listed), NAC?
-    (RR has no NAC for this site), NAC≠ (RR's NAC differs), +N nbr (N
-    new-site neighbor candidates), N nbr CC≠ (N neighbor CC mismatches).
+    (RR has no NAC for this site), NAC≠ (RR's NAC differs), N sec CC≠
+    (N secondary CC mismatches), +N nbr (N new-site neighbor candidates),
+    N nbr CC≠ (N neighbor CC mismatches).
     """
     rr = record.rr
     if not rr:
@@ -79,6 +80,10 @@ def _rr_cell(record: SurveyRecord) -> str:
         parts.append("NAC?")
     elif nac_diff == "differs":
         parts.append("NAC≠")
+
+    n_sec_cc = len(rr.get("secondary_cc_mismatches") or [])
+    if n_sec_cc:
+        parts.append(f"{n_sec_cc} sec CC≠")
 
     n_new_nbr = len(rr.get("neighbors_decoded_not_in_rr") or [])
     if n_new_nbr:

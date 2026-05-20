@@ -13,6 +13,8 @@ Given a decoded `SurveyRecord` and an `RRClient`, produce an
   - per-neighbor CC verification: whether the advertised CC frequency
     is listed for that neighbor's RR site, and whether it's flagged
     as a control channel (use code "d" or "a")
+  - per-secondary-CC verification: the same listed/flagged-as-control
+    check applied to this site's own SCCB-advertised secondary CCs
 
 The result is attached to `SurveyRecord.rr` (a new optional field). The
 output stages — text report, submission report, console summary — read
@@ -87,6 +89,25 @@ class NeighborCCMismatch:
 
 
 @dataclass
+class SecondaryCCMismatch:
+    """A secondary control channel (decoded from this site's SCCB
+    broadcasts) whose frequency doesn't line up with the RR-listed
+    frequencies for *this* site.
+
+    Same two failure modes as NeighborCCMismatch, but for the site's own
+    SCCB-advertised secondary CCs rather than a neighbor's advertised CC:
+      - kind="missing_from_rr": the secondary CC freq isn't in this site's
+        RR frequency list at all (within 1 kHz tolerance) → freq needs to
+        be added to RR
+      - kind="not_marked_control": freq is listed but its `use` code
+        isn't "d"/"a" → use-code is wrong in RR
+    """
+    freq_hz: int
+    kind: str                              # "missing_from_rr" | "not_marked_control"
+    rr_use_code: str | None = None         # populated when kind="not_marked_control"
+
+
+@dataclass
 class EnrichmentResult:
     """All info we know about an SurveyRecord after RR cross-reference.
 
@@ -134,6 +155,12 @@ class EnrichmentResult:
     # advertised CC frequency is listed and flagged as control. Misses
     # become entries here.
     neighbor_cc_mismatches: list[NeighborCCMismatch] = field(default_factory=list)
+
+    # Per-secondary-CC verification (only when site_match=True). For each
+    # secondary control channel this site advertised via SCCB, we check
+    # whether the frequency is in the site's own RR frequency list and
+    # flagged as control. Misses become entries here. Russ Mason's request.
+    secondary_cc_mismatches: list[SecondaryCCMismatch] = field(default_factory=list)
 
     # Free-form
     notes: list[str] = field(default_factory=list)
@@ -339,6 +366,14 @@ def _build_site_match(record: SurveyRecord, system: RRSystem,
         if mismatch is not None:
             result.neighbor_cc_mismatches.append(mismatch)
 
+    # Secondary CC cross-reference. SCCB advertises this site's own
+    # secondary control channels; verify each is in the site's RR
+    # frequency list and flagged as control.
+    for sccb_hz in sorted(record.secondary_cc):
+        sec_mismatch = _check_secondary_cc(sccb_hz, site)
+        if sec_mismatch is not None:
+            result.secondary_cc_mismatches.append(sec_mismatch)
+
     return result
 
 
@@ -371,6 +406,28 @@ def _check_neighbor_cc(neighbor: NeighborSite,
             rr_use_code=closest.use or "",
             rr_site_description=rr_site.description or None,
         )
+    return None
+
+
+def _check_secondary_cc(freq_hz: int,
+                        rr_site: RRSite) -> SecondaryCCMismatch | None:
+    """Verify a SCCB-advertised secondary CC against this site's RR record.
+
+    Returns None if the frequency is listed for the site AND flagged as
+    control, otherwise a SecondaryCCMismatch describing the gap. Mirrors
+    `_check_neighbor_cc`, but compares against the site's own RR frequency
+    list rather than a neighbor's.
+    """
+    if not rr_site.frequencies:
+        # No frequency data at all — treat as missing from RR.
+        return SecondaryCCMismatch(freq_hz=freq_hz, kind="missing_from_rr")
+
+    closest = min(rr_site.frequencies, key=lambda f: abs(f.freq_hz - freq_hz))
+    if abs(closest.freq_hz - freq_hz) >= 1000:  # >1 kHz away = different channel
+        return SecondaryCCMismatch(freq_hz=freq_hz, kind="missing_from_rr")
+    if not closest.is_control:
+        return SecondaryCCMismatch(freq_hz=freq_hz, kind="not_marked_control",
+                                   rr_use_code=closest.use or "")
     return None
 
 
