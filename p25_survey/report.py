@@ -9,6 +9,7 @@ from __future__ import annotations
 from io import StringIO
 from pathlib import Path
 
+from p25_survey.enrich import site_nac_diff
 from p25_survey.survey import SurveyRecord, read_survey
 
 
@@ -69,6 +70,13 @@ def _fmt_rr(record: SurveyRecord) -> str:
             sign = "+" if offset_hz >= 0 else ""
             parts.append(f"FREQ MISMATCH: RR={cc['expected_hz'] / 1e6:.5f} MHz, "
                          f"offset {sign}{offset_hz} Hz")
+    nac_diff = site_nac_diff(record.nac, rr.get("rr_site_nac"))
+    if nac_diff == "differs":
+        parts.append(f"NAC MISMATCH: RR={rr['rr_site_nac']}, "
+                     f"decoded {_fmt_hex(record.nac, 3)}")
+    elif nac_diff == "missing":
+        parts.append(f"NAC MISMATCH: RR has none listed, "
+                     f"decoded {_fmt_hex(record.nac, 3)}")
     n_extra = len(rr.get("neighbors_decoded_not_in_rr") or [])
     n_cc_miss = len(rr.get("neighbor_cc_mismatches") or [])
     if n_extra:
