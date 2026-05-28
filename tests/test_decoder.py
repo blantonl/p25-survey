@@ -7,7 +7,18 @@ message object.
 
 from __future__ import annotations
 
-from p25_survey.decoder import _DwellState, _FRAME_TYPE_TSBK, _process_msg
+import sys
+import types
+
+import pytest
+
+from p25_survey.decoder import (
+    Op25NotInstalledError,
+    _DwellState,
+    _FRAME_TYPE_TSBK,
+    _process_msg,
+    ensure_op25_importable,
+)
 from tests.test_tsbk import pack_iden_up_legacy, pack_sccb
 
 
@@ -87,3 +98,63 @@ class TestSccbProcessing:
         _process_msg(_tsbk_msg(sccb_tsbk), state)
         _process_msg(_tsbk_msg(sccb_tsbk), state)  # repeat
         assert len(state.secondary_cc) == 2
+
+
+class TestEnsureOp25Importable:
+    """Cover the diagnostic paths in ensure_op25_importable().
+
+    The success path needs a real op25 install; we can't reasonably mock
+    that without re-implementing half of gnuradio. So we exercise the
+    failure paths — which are the user-facing ones anyway.
+    """
+
+    def _stub_gnuradio_without_op25(self, monkeypatch):
+        """Install a fake `gnuradio` package whose op25_repeater is missing."""
+        gr_mod = types.ModuleType("gnuradio")
+        gr_mod.__path__ = []  # namespace-package-style; no submodules
+        monkeypatch.setitem(sys.modules, "gnuradio", gr_mod)
+        # Prevent the real `from gnuradio import op25_repeater` from succeeding
+        # by ensuring the submodule isn't cached.
+        sys.modules.pop("gnuradio.op25_repeater", None)
+        return gr_mod
+
+    def test_raises_when_op25_missing_and_no_install_found(self, monkeypatch):
+        self._stub_gnuradio_without_op25(monkeypatch)
+        # Point the search globs at a path that won't exist.
+        monkeypatch.setattr(
+            "p25_survey.decoder._OP25_SEARCH_GLOBS",
+            ("/nonexistent/path/op25_repeater*.so",),
+        )
+        with pytest.raises(Op25NotInstalledError) as info:
+            ensure_op25_importable()
+        msg = str(info.value)
+        # The error should be actionable: name the missing piece and
+        # suggest something concrete.
+        assert "op25_repeater" in msg
+
+    def test_numpy_v2_diagnosis_mentions_break_system_packages(self, monkeypatch):
+        """When numpy>=2 is detected, the error should mention the workaround."""
+        self._stub_gnuradio_without_op25(monkeypatch)
+        monkeypatch.setattr(
+            "p25_survey.decoder._OP25_SEARCH_GLOBS",
+            ("/nonexistent/path/op25_repeater*.so",),
+        )
+        monkeypatch.setattr("p25_survey.decoder._numpy_major_version", lambda: 2)
+        with pytest.raises(Op25NotInstalledError) as info:
+            ensure_op25_importable()
+        msg = str(info.value)
+        assert "numpy" in msg.lower()
+        assert "numpy<2" in msg or "'numpy<2'" in msg
+
+    def test_missing_install_diagnosis_mentions_boatbod(self, monkeypatch):
+        """Numpy 1.x + no install found → point user at boatbod install."""
+        self._stub_gnuradio_without_op25(monkeypatch)
+        monkeypatch.setattr(
+            "p25_survey.decoder._OP25_SEARCH_GLOBS",
+            ("/nonexistent/path/op25_repeater*.so",),
+        )
+        monkeypatch.setattr("p25_survey.decoder._numpy_major_version", lambda: 1)
+        with pytest.raises(Op25NotInstalledError) as info:
+            ensure_op25_importable()
+        msg = str(info.value)
+        assert "boatbod" in msg.lower() or "install.sh" in msg

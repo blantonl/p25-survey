@@ -35,13 +35,21 @@ from dataclasses import dataclass
 import numpy as np
 
 
-# Default sample rate per driver. The Airspy Mini supports 6 / 3 MSPS only;
-# we default to 6 (wider chunks → faster Phase 1).
+# Per-driver preferred sample rate when the device exposes a continuous
+# range (RTL-SDR, HackRF). For Airspy the rate is chosen from what the
+# device actually reports via airspy_get_samplerates() — see
+# `probe_sample_rates()` and `select_sample_rate()` — so the value here
+# is only a fallback if the probe somehow returns no discrete points.
 _DEFAULT_SAMPLE_RATE_HZ: dict[str, int] = {
     "rtlsdr": 2_400_000,
     "airspy": 6_000_000,
     "hackrf": 8_000_000,
 }
+
+# Cap on auto-picked sample rate. Wider chunks make Phase 1 faster, but past
+# ~10 MSPS the FFT cost on a Pi-class host outweighs the chunk-count win and
+# the energy detector starts seeing more out-of-band aliasing artifacts.
+_AUTO_RATE_CAP_HZ: int = 10_000_000
 
 _DEFAULT_DEVICE_ARGS: dict[str, str] = {
     "rtlsdr": "rtl=0",
@@ -191,6 +199,152 @@ class GainInfo:
     device_args: str
     default_range: GainRange    # what `set_gain(N, 0)` controls
     stages: list[GainRange]     # named stages from get_gain_names()
+
+
+@dataclass(frozen=True)
+class SampleRateSupport:
+    """What sample rates a device actually supports, per gr-osmosdr.
+
+    `get_sample_rates()` returns a `meta_range_t` populated by the driver.
+    For Airspy that's the discrete set from libairspy's
+    `airspy_get_samplerates()` (e.g. R2 → {2.5M, 10M}; Mini → {3M, 6M}).
+    For RTL-SDR and HackRF the driver reports a continuous (start, stop)
+    span. We model both so `select_sample_rate()` can do the right pick
+    for each.
+    """
+    driver: str
+    discrete: tuple[int, ...] = ()           # populated for Airspy-like drivers
+    range_hz: tuple[int, int] | None = None  # (lo, hi) for continuous drivers
+
+    def supports(self, rate_hz: int) -> bool:
+        if self.discrete:
+            return rate_hz in self.discrete
+        if self.range_hz is not None:
+            lo, hi = self.range_hz
+            return lo <= rate_hz <= hi
+        return False
+
+    def describe(self) -> str:
+        if self.discrete:
+            return ", ".join(f"{v / 1e6:g} MSPS" for v in self.discrete)
+        if self.range_hz is not None:
+            lo, hi = self.range_hz
+            return f"{lo / 1e6:g}–{hi / 1e6:g} MSPS (continuous)"
+        return "(unknown)"
+
+
+def _meta_range_entries(meta) -> list:
+    """Iterate the entries of a gr-osmosdr meta_range_t.
+
+    SWIG-wrapped meta_range_t is a vector<range_t>. Different SWIG vintages
+    expose iteration differently (list(meta), meta.size(), or just
+    .start()/.stop() on the aggregate). Try them in order so this works
+    across boatbod/op25 vendored gr-osmosdr versions.
+    """
+    try:
+        return list(meta)
+    except TypeError:
+        pass
+    try:
+        n = meta.size()
+        return [meta[i] for i in range(n)]
+    except (AttributeError, TypeError):
+        return []
+
+
+def probe_sample_rates(driver: str, device_args: str | None = None) -> SampleRateSupport:
+    """Open the SDR briefly and report supported sample rates.
+
+    For Airspy variants this is the fix for the Mini-vs-R2 mismatch: the
+    driver knows which discrete rates the connected device supports, so we
+    don't have to guess. Raises `SdrOpenError` if the device can't be
+    opened (same convention as `probe_gains`).
+    """
+    from p25_survey._stderr import suppress_c_stderr  # noqa: PLC0415
+
+    args = device_args or _DEFAULT_DEVICE_ARGS.get(driver, driver)
+    with suppress_c_stderr():
+        src = _open_osmosdr_source(driver, args)
+        meta = src.get_sample_rates()
+        discrete: list[int] = []
+        span: tuple[int, int] | None = None
+        for r in _meta_range_entries(meta):
+            try:
+                lo, hi = int(r.start()), int(r.stop())
+            except (AttributeError, TypeError):
+                continue
+            if lo == hi:
+                discrete.append(lo)
+            elif span is None:
+                span = (lo, hi)
+        # Fallback: aggregate meta range (some bindings expose start/stop
+        # directly on meta_range_t without per-entry iteration).
+        if not discrete and span is None:
+            try:
+                lo, hi = int(meta.start()), int(meta.stop())
+                if lo == hi:
+                    discrete.append(lo)
+                else:
+                    span = (lo, hi)
+            except (AttributeError, TypeError):
+                pass
+
+    return SampleRateSupport(
+        driver=driver,
+        discrete=tuple(sorted(set(discrete))),
+        range_hz=span,
+    )
+
+
+class SampleRateError(ValueError):
+    """Raised when a requested sample rate isn't supported by the device."""
+
+    def __init__(self, requested_hz: int, support: SampleRateSupport) -> None:
+        super().__init__(
+            f"sample rate {requested_hz / 1e6:g} MSPS not supported by "
+            f"{support.driver} (device reports: {support.describe()})"
+        )
+        self.requested_hz = requested_hz
+        self.support = support
+
+
+def select_sample_rate(support: SampleRateSupport, requested_hz: int | None) -> int:
+    """Pick a sample rate from what the device actually reports.
+
+    If `requested_hz` is given, validate it; otherwise auto-pick:
+      - Discrete (Airspy): highest discrete rate at or below `_AUTO_RATE_CAP_HZ`.
+        Falls back to the lowest discrete rate if every entry exceeds the cap.
+      - Continuous (RTL-SDR, HackRF): use the driver's preferred default,
+        clamped into the reported (lo, hi) span.
+    Raises `SampleRateError` if a requested rate isn't supported, or
+    `ValueError` if the device reports neither discrete nor continuous rates
+    and no driver default exists.
+    """
+    if requested_hz is not None:
+        if not support.supports(requested_hz):
+            raise SampleRateError(requested_hz, support)
+        return requested_hz
+
+    if support.discrete:
+        below_cap = [v for v in support.discrete if v <= _AUTO_RATE_CAP_HZ]
+        if below_cap:
+            return max(below_cap)
+        return min(support.discrete)
+
+    default = _DEFAULT_SAMPLE_RATE_HZ.get(support.driver)
+    if support.range_hz is not None:
+        lo, hi = support.range_hz
+        if default is None:
+            # No preferred value, but we know the span. Pick the cap (or hi).
+            return min(hi, _AUTO_RATE_CAP_HZ) if hi >= lo else lo
+        return max(lo, min(hi, default))
+
+    if default is None:
+        raise ValueError(
+            f"driver {support.driver!r} reported no usable sample rates and "
+            "we have no default"
+        )
+    return default
 
 
 def probe_gains(driver: str, device_args: str | None = None) -> GainInfo:

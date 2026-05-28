@@ -114,6 +114,104 @@ def _add_vendored_op25_to_path() -> None:
         sys.path.insert(0, p)
 
 
+# Candidate directories that may contain a boatbod op25_repeater extension.
+# We search these when the bare `from gnuradio import op25_repeater` fails,
+# which is the common shiv-on-fresh-Linux case — system gnuradio lives in
+# /usr/lib while op25 installs under /usr/local/lib (or a user's ~/op25
+# build tree), so Python finds gnuradio but not the op25 submodule.
+_OP25_SEARCH_GLOBS: tuple[str, ...] = (
+    "/usr/local/lib/python*/dist-packages/gnuradio/op25_repeater*.so",
+    "/usr/local/lib/python*/site-packages/gnuradio/op25_repeater*.so",
+    "/usr/lib/python*/dist-packages/gnuradio/op25_repeater*.so",
+    str(Path.home() / "op25/install/lib/python*/dist-packages/gnuradio/op25_repeater*.so"),
+    str(Path.home() / "op25/op25/gr-op25_repeater/build/python/op25_repeater*.so"),
+)
+
+
+class Op25NotInstalledError(RuntimeError):
+    """Raised when we can't import the boatbod op25_repeater extension.
+
+    The message is composed specifically to help users hit by the shiv
+    install pattern: gnuradio is importable but `op25_repeater` lives in
+    a different prefix than the running gnuradio package.
+    """
+
+
+def _find_op25_extension() -> Path | None:
+    """Search common boatbod install paths for op25_repeater.*.so."""
+    import glob  # noqa: PLC0415
+    for pattern in _OP25_SEARCH_GLOBS:
+        matches = glob.glob(pattern)
+        if matches:
+            return Path(matches[0]).parent
+    return None
+
+
+def _numpy_major_version() -> int | None:
+    try:
+        return int(np.__version__.split(".", 1)[0])
+    except (AttributeError, ValueError, IndexError):
+        return None
+
+
+def ensure_op25_importable() -> None:
+    """Verify the op25 P25 decoder is importable; raise a helpful error if not.
+
+    Strategy:
+      1. Try `from gnuradio import op25_repeater` directly. If that works,
+         we're done — the user has a sane install.
+      2. If it fails, locate `op25_repeater*.so` under known boatbod install
+         paths and extend `gnuradio.__path__` to make it visible. Retry.
+      3. On persistent failure, raise `Op25NotInstalledError` with a
+         message that names the most likely root cause (numpy ABI mismatch
+         vs missing/misplaced install).
+
+    Designed to be called once before Phase 2 starts so the failure surfaces
+    before any candidate decode, instead of buried in the decode traceback.
+    """
+    try:
+        from gnuradio import op25_repeater  # noqa: F401, PLC0415
+        return
+    except ImportError:
+        pass
+
+    ext_dir = _find_op25_extension()
+    if ext_dir is not None:
+        try:
+            import gnuradio  # noqa: PLC0415
+            if str(ext_dir) not in list(gnuradio.__path__):
+                gnuradio.__path__.append(str(ext_dir))
+            from gnuradio import op25_repeater  # noqa: F401, PLC0415
+            return
+        except ImportError:
+            pass
+
+    # Still broken — pick the most informative diagnostic.
+    np_major = _numpy_major_version()
+    lines = ["op25_repeater is not importable from your gnuradio install."]
+    if np_major is not None and np_major >= 2:
+        lines.append(
+            f"  Likely cause: numpy {np.__version__} is installed, but boatbod "
+            f"op25 is built against the numpy 1.x ABI. Install numpy<2:"
+        )
+        lines.append("    pip install --break-system-packages 'numpy<2'")
+        lines.append("  (or run inside a venv with numpy<2 installed)")
+    elif ext_dir is None:
+        lines.append(
+            "  Likely cause: boatbod op25 isn't installed, or installed to a "
+            "prefix Python doesn't search. Install per the project README:"
+        )
+        lines.append("    git clone https://github.com/boatbod/op25.git && cd op25 && ./install.sh")
+    else:
+        lines.append(
+            f"  Found {ext_dir / 'op25_repeater*.so'} but importing it still "
+            f"failed — usually an ABI mismatch (numpy version, Python version, "
+            f"or gnuradio version)."
+        )
+        lines.append("  Try: pip install --break-system-packages 'numpy<2'")
+    raise Op25NotInstalledError("\n".join(lines))
+
+
 def _process_msg(msg, state: _DwellState) -> None:
     """Decode one frame_assembler message and update dwell state."""
     state.frame_count += 1

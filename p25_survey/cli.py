@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import sys
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from p25_survey import __version__
 from p25_survey.bands import default_step_hz, describe_band
@@ -27,6 +28,7 @@ class SurveyConfig:
     step_hz: int
     sdr: str | None
     device_args: str | None
+    sample_rate_hz: int | None  # None → auto-detect from device at scan start
     gain_db: float | None
     ppm: float
     threshold_db: float
@@ -65,6 +67,17 @@ def _khz(arg: str) -> int:
     return int(round(khz * 1_000))
 
 
+def _msps(arg: str) -> int:
+    """Parse a sample rate in MSPS to integer Hz. Accepts '10', '2.5', '6.0'."""
+    try:
+        msps = float(arg)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"not a number: {arg!r}") from exc
+    if msps <= 0:
+        raise argparse.ArgumentTypeError(f"sample rate must be positive: {arg!r}")
+    return int(round(msps * 1_000_000))
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="p25-survey",
@@ -89,6 +102,11 @@ def build_parser() -> argparse.ArgumentParser:
                      help="SDR driver. Autoprobed if omitted.")
     sdr.add_argument("--device-args", default=None, metavar="ARGS",
                      help="Raw gr-osmosdr device args (e.g. 'rtl=0' or 'airspy,bias=1').")
+    sdr.add_argument("--sample-rate", type=_msps, default=None, metavar="MSPS",
+                     help="SDR sample rate (MSPS). Auto-detected from the device "
+                          "by default — Airspy R2 gets 10 MSPS, Mini gets 6, "
+                          "RTL-SDR gets ~2.4. Override only if you need a specific "
+                          "rate (e.g. lower CPU load).")
     sdr.add_argument("--gain", type=float, default=None, metavar="dB",
                      help="RF gain (dB). Sets the driver's default stage — for Airspy this "
                           "is the linearity preset (0-21); for RTL-SDR the tuner gain. Use "
@@ -161,6 +179,7 @@ def resolve_config(args: argparse.Namespace) -> SurveyConfig:
         step_hz=step_hz,
         sdr=args.sdr,
         device_args=args.device_args,
+        sample_rate_hz=args.sample_rate,
         gain_db=args.gain,
         ppm=args.ppm,
         threshold_db=args.threshold,
@@ -188,6 +207,10 @@ def print_config_summary(cfg: SurveyConfig) -> None:
     print(f"  step:      {cfg.step_hz / 1e3:g} kHz  ({n_steps} steps)")
     print(f"  sdr:       {cfg.sdr or 'autoprobe'}"
           f"{' [' + cfg.device_args + ']' if cfg.device_args else ''}")
+    if cfg.sample_rate_hz is None:
+        print(f"  rate:      auto-detect from device")
+    else:
+        print(f"  rate:      {cfg.sample_rate_hz / 1e6:g} MSPS")
     print(f"  gain:      {cfg.gain_db if cfg.gain_db is not None else 'driver default'} dB")
     print(f"  ppm:       {cfg.ppm}")
     print(f"  threshold: {cfg.threshold_db} dB above noise floor")
@@ -256,6 +279,39 @@ def _run_phase1_scan(cfg: "SurveyConfig", sdr, sample_rate: int, n_samples: int,
         )
 
 
+# Match the YYYY-MM-DD prefix; no \b on the trailing edge so values like
+# "2027-01-15T00:00:00Z" (if RR ever returns ISO datetimes) still parse.
+_ISO_DATE_RE = re.compile(r"(\d{4})-(\d{2})-(\d{2})")
+
+
+def _subscription_status(expire_str: str, today: date | None = None) -> tuple[str, str]:
+    """Classify an RR subExpireDate string.
+
+    Returns (status, friendly_description) where status is one of:
+      - "active"  — subscription is current; proceed normally
+      - "lifetime" — "Never" or "Never - Admin"; proceed normally
+      - "expired" — parsed ISO date is in the past; refuse with diagnostic
+      - "unknown" — empty or unparseable; warn but proceed (don't second-guess RR)
+    """
+    today = today or datetime.now(tz=timezone.utc).date()
+    stripped = (expire_str or "").strip()
+    if not stripped:
+        return ("unknown", "RR returned no subscription expiry")
+    # "Never" / "Never - Admin" — lifetime / admin accounts.
+    if stripped.lower().startswith("never"):
+        return ("lifetime", stripped)
+    m = _ISO_DATE_RE.search(stripped)
+    if not m:
+        return ("unknown", f"could not parse expiry {stripped!r}")
+    try:
+        expire = date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    except ValueError:
+        return ("unknown", f"could not parse expiry {stripped!r}")
+    if expire < today:
+        return ("expired", f"expired {expire.isoformat()}")
+    return ("active", f"expires {expire.isoformat()}")
+
+
 def _connect_rr(cfg: SurveyConfig):
     """Prompt for RadioReference credentials and verify with getUserData.
 
@@ -287,7 +343,22 @@ def _connect_rr(cfg: SurveyConfig):
     except RRError as exc:
         print(f"error: RadioReference: {exc}", flush=True)
         raise SystemExit(2)
-    print(f"  Logged in as {user.username} (subscription expires {user.sub_expire_date})")
+    status, detail = _subscription_status(user.sub_expire_date)
+    if status == "expired":
+        print(file=sys.stderr)
+        print(f"error: RadioReference Premium subscription required for --rr "
+              f"({detail}).", file=sys.stderr)
+        print(f"  Account {user.username} authenticated, but the subscription is "
+              f"not current.", file=sys.stderr)
+        print(f"  Renew at https://www.radioreference.com/apps/content/?cid=3, "
+              f"or re-run without --rr to skip RR enrichment.", file=sys.stderr)
+        raise SystemExit(2)
+    if status == "unknown":
+        print(f"  Logged in as {user.username} (warning: {detail})", flush=True)
+        print(f"  Continuing — RR lookups may fail if the subscription is "
+              f"not current.", flush=True)
+    else:
+        print(f"  Logged in as {user.username} ({detail})", flush=True)
     return client
 
 
@@ -297,26 +368,54 @@ def _run_scan(cfg: SurveyConfig) -> int:
     With --phase1-only, prints candidate frequencies and stops.
     """
     from p25_survey.energy_scan import plan_scan_chunks, scan_range
-    from p25_survey.sdr import SdrCapture, SdrConfig
+    from p25_survey.sdr import (
+        SampleRateError, SdrCapture, SdrConfig, probe_sample_rates, select_sample_rate,
+    )
 
     driver = _resolve_driver(cfg)
     if driver is None:
         print("error: no SDR driver specified and gr-osmosdr is not importable", flush=True)
         return 2
 
-    # Authenticate to RR up front (before Phase 1) so credential failures
-    # surface immediately, and so the user knows the prompt is over before
-    # they see any scan output.
+    # Probe the device for its supported sample rates before doing anything
+    # else expensive (RR auth, etc.). For Airspy this is the fix for the
+    # Mini-vs-R2 mismatch — gr-osmosdr would otherwise raise
+    # "Unsupported samplerate: 6M" deep inside Phase 1. SdrOpenError from
+    # the probe propagates to main()'s handler for a friendly diagnostic.
+    try:
+        rate_support = probe_sample_rates(driver, device_args=cfg.device_args)
+    except ImportError as exc:
+        print(f"error: gr-osmosdr is not installed: {exc}", file=sys.stderr)
+        print("  Install boatbod op25 (which provides gr-osmosdr) per the "
+              "project README.", file=sys.stderr)
+        return 2
+    try:
+        sample_rate = select_sample_rate(rate_support, cfg.sample_rate_hz)
+    except SampleRateError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        print(f"       supported by this {rate_support.driver}: "
+              f"{rate_support.describe()}", file=sys.stderr)
+        return 2
+
+    if cfg.sample_rate_hz is None:
+        print(f"  detected:  {rate_support.driver} supports {rate_support.describe()}; "
+              f"using {sample_rate / 1e6:g} MSPS")
+    elif cfg.verbose:
+        print(f"  detected:  {rate_support.driver} supports {rate_support.describe()}")
+
+    # Authenticate to RR up front (after the SDR probe so a missing device
+    # surfaces before we prompt for credentials, but before Phase 1 so any
+    # credential failures surface immediately).
     rr_client = _connect_rr(cfg) if cfg.rr_enabled else None
 
     sdr_cfg = SdrConfig(
         driver=driver,
         device_args=cfg.device_args,
+        sample_rate_hz=sample_rate,
         gain_db=cfg.gain_db,
         ppm=cfg.ppm,
     )
     sdr = SdrCapture(sdr_cfg)
-    sample_rate = sdr.sample_rate_hz
     n_samples = 1 << 17
 
     if cfg.verbose:
@@ -342,9 +441,18 @@ def _run_scan(cfg: SurveyConfig) -> int:
 
     # ----- Phase 2 -----
     from p25_survey.console import make_display
-    from p25_survey.decoder import decode_candidate
+    from p25_survey.decoder import Op25NotInstalledError, decode_candidate, ensure_op25_importable
     from p25_survey.report import render_file
     from p25_survey.survey import SurveyWriter
+
+    # Surface op25 install problems before the first decode rather than mid-scan —
+    # gives the user a single, actionable error and avoids a partial survey file.
+    try:
+        ensure_op25_importable()
+    except Op25NotInstalledError as exc:
+        print(file=sys.stderr)
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
 
     writer = SurveyWriter(cfg.output_path, resume=cfg.resume)
     skipped = sum(1 for c in candidates if writer.already_characterized(c.freq_hz))
