@@ -25,7 +25,7 @@ SDR_DRIVERS = ("rtlsdr", "airspy", "hackrf")
 class SurveyConfig:
     start_hz: int
     stop_hz: int
-    step_hz: int
+    step_hz_list: tuple[int, ...]   # one or more tuning steps; ascending
     sdr: str | None
     device_args: str | None
     sample_rate_hz: int | None  # None → auto-detect from device at scan start
@@ -67,6 +67,33 @@ def _khz(arg: str) -> int:
     return int(round(khz * 1_000))
 
 
+def _khz_list(arg: str) -> tuple[int, ...]:
+    """Parse one or more comma-separated steps in kHz. Accepts '12.5' or '6.25,7.5,12.5'.
+
+    Returned tuple is ascending and de-duplicated. The motivation is VHF/UHF
+    systems where different idens use different channel spacings — running
+    one Phase 1 pass per step lets Phase 2 see CCs that would otherwise
+    snap to the wrong grid.
+    """
+    if not arg.strip():
+        raise argparse.ArgumentTypeError("step list cannot be empty")
+    values: list[int] = []
+    for tok in arg.split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
+        try:
+            khz = float(tok)
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError(f"not a number: {tok!r}") from exc
+        if khz <= 0:
+            raise argparse.ArgumentTypeError(f"step must be positive: {tok!r}")
+        values.append(int(round(khz * 1_000)))
+    if not values:
+        raise argparse.ArgumentTypeError("step list contained no values")
+    return tuple(sorted(set(values)))
+
+
 def _msps(arg: str) -> int:
     """Parse a sample rate in MSPS to integer Hz. Accepts '10', '2.5', '6.0'."""
     try:
@@ -94,8 +121,13 @@ def build_parser() -> argparse.ArgumentParser:
                        help="Start frequency (MHz, e.g. 851.0)")
     sweep.add_argument("--stop", type=_mhz, required=False, metavar="MHz",
                        help="Stop frequency (MHz, e.g. 870.0)")
-    sweep.add_argument("--step", type=_khz, default=None, metavar="kHz",
-                       help="Tuning step (kHz). Defaults to band-appropriate value (see README).")
+    sweep.add_argument("--step", type=_khz_list, default=None, metavar="kHz",
+                       help="Tuning step(s) in kHz. Single value (e.g. '12.5') or a "
+                            "comma-separated list ('6.25,7.5,12.5') for VHF/UHF systems "
+                            "that mix channel spacings across idens. With a list, each "
+                            "detected peak is snapped to whichever grid lands closest — "
+                            "Phase 1 capture cost is unchanged. Defaults to a "
+                            "band-appropriate value (see README).")
 
     sdr = p.add_argument_group("SDR")
     sdr.add_argument("--sdr", choices=SDR_DRIVERS, default=None,
@@ -166,7 +198,10 @@ def resolve_config(args: argparse.Namespace) -> SurveyConfig:
     if args.start >= args.stop:
         raise SystemExit(f"--start ({args.start} Hz) must be less than --stop ({args.stop} Hz)")
 
-    step_hz = args.step if args.step is not None else default_step_hz(args.start, args.stop)
+    if args.step is not None:
+        step_hz_list = args.step  # already a tuple from _khz_list
+    else:
+        step_hz_list = (default_step_hz(args.start, args.stop),)
 
     output_path = args.output
     if output_path is None:
@@ -176,7 +211,7 @@ def resolve_config(args: argparse.Namespace) -> SurveyConfig:
     return SurveyConfig(
         start_hz=args.start,
         stop_hz=args.stop,
-        step_hz=step_hz,
+        step_hz_list=step_hz_list,
         sdr=args.sdr,
         device_args=args.device_args,
         sample_rate_hz=args.sample_rate,
@@ -200,11 +235,18 @@ def resolve_config(args: argparse.Namespace) -> SurveyConfig:
 def print_config_summary(cfg: SurveyConfig) -> None:
     span_mhz = (cfg.stop_hz - cfg.start_hz) / 1_000_000
     band_desc = describe_band(cfg.start_hz)
-    n_steps = (cfg.stop_hz - cfg.start_hz) // cfg.step_hz
+    finest_step = min(cfg.step_hz_list)
+    n_steps_finest = (cfg.stop_hz - cfg.start_hz) // finest_step
+    if len(cfg.step_hz_list) == 1:
+        step_desc = f"{finest_step / 1e3:g} kHz  ({n_steps_finest} steps)"
+    else:
+        steps_kHz = ", ".join(f"{s / 1e3:g}" for s in cfg.step_hz_list)
+        step_desc = (f"{steps_kHz} kHz  (multi-grid snap; finest "
+                     f"= {n_steps_finest} steps)")
     print(f"P25 Survey — configuration")
     print(f"  range:     {cfg.start_hz / 1e6:.4f} – {cfg.stop_hz / 1e6:.4f} MHz  ({span_mhz:.3f} MHz)")
     print(f"  band:      {band_desc}")
-    print(f"  step:      {cfg.step_hz / 1e3:g} kHz  ({n_steps} steps)")
+    print(f"  step:      {step_desc}")
     print(f"  sdr:       {cfg.sdr or 'autoprobe'}"
           f"{' [' + cfg.device_args + ']' if cfg.device_args else ''}")
     if cfg.sample_rate_hz is None:
@@ -250,7 +292,7 @@ def _run_phase1_scan(cfg: "SurveyConfig", sdr, sample_rate: int, n_samples: int,
         yield from scan_range(
             start_hz=cfg.start_hz, stop_hz=cfg.stop_hz,
             sample_rate_hz=sample_rate, iq_provider=provider,
-            threshold_db=cfg.threshold_db, step_hz=cfg.step_hz,
+            threshold_db=cfg.threshold_db, step_hz=cfg.step_hz_list,
         )
         return
 
@@ -275,7 +317,7 @@ def _run_phase1_scan(cfg: "SurveyConfig", sdr, sample_rate: int, n_samples: int,
         yield from scan_range(
             start_hz=cfg.start_hz, stop_hz=cfg.stop_hz,
             sample_rate_hz=sample_rate, iq_provider=provider,
-            threshold_db=cfg.threshold_db, step_hz=cfg.step_hz,
+            threshold_db=cfg.threshold_db, step_hz=cfg.step_hz_list,
         )
 
 

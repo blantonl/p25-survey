@@ -14,6 +14,8 @@ from p25_survey.tsbk import (
     NetStsBcst,
     RfssStsBcst,
     Sccb,
+    parse_fdma_mbt,
+    parse_fdma_mbt_int,
     parse_fdma_tsbk,
     parse_fdma_tsbk_int,
     parse_tdma_pdu,
@@ -104,6 +106,149 @@ def pack_adj_sts(rfid: int, stid: int, ch1: int) -> int:
         "stid": (40, stid),
         "ch1": (24, ch1),
     })
+
+
+# ---------------------------------------------------------------------------
+# MBT pack helpers — produce the (header, mbt_data) integer pair op25's
+# decode_mbt_data sees. parse_fdma_mbt_int takes those same pre-shifted
+# integers (`header << 16` and `mbt_data << 32` in op25's convention), so
+# the shifts below are read directly off tk_p25.decode_mbt_data's
+# `(header >> N) & MASK` and `(mbt_data >> N) & MASK` expressions.
+# ---------------------------------------------------------------------------
+
+
+def pack_mbt_header_int(fields: dict[str, tuple[int, int]]) -> int:
+    """Pack the MBT header in the form parse_fdma_mbt_int expects.
+
+    Shifts come straight from tk_p25.decode_mbt_data — e.g. `syid` is
+    read as `(header >> 48) & 0xfff`, so pass `("syid", (48, value))`.
+    """
+    header = 0
+    for _, (shift, value) in fields.items():
+        header |= (value & ((1 << 64) - 1)) << shift
+    return header
+
+
+def pack_mbt_data_int(fields: dict[str, tuple[int, int]]) -> int:
+    """Pack the MBT data block in the form parse_fdma_mbt_int expects.
+
+    Shifts come from tk_p25.decode_mbt_data's reads on its `mbt_data`
+    parameter (which is `original_data << 32`).
+    """
+    data = 0
+    for _, (shift, value) in fields.items():
+        data |= (value & ((1 << 128) - 1)) << shift
+    return data
+
+
+def pack_mbt_adj_sts(syid: int, rfid: int, stid: int, ch1: int) -> tuple[int, int]:
+    """ADJ_STS_BCST (opcode 0x3C) MBT — header carries syid/rfid/stid,
+    data carries ch1. This is the broadcast WISCOM De Pere uses for
+    neighbor announcements, and the one we were dropping in v0.3.7."""
+    header = pack_mbt_header_int({
+        "syid": (48, syid),
+        "rfid": (24, rfid),
+        "stid": (16, stid),
+    })
+    data = pack_mbt_data_int({"ch1": (80, ch1)})
+    return header, data
+
+
+def pack_mbt_net_sts(syid: int, wacn: int, ch1: int) -> tuple[int, int]:
+    header = pack_mbt_header_int({"syid": (48, syid)})
+    data = pack_mbt_data_int({
+        "wacn": (76, wacn),
+        "ch1": (56, ch1),
+    })
+    return header, data
+
+
+def pack_mbt_rfss_sts(syid: int, rfid: int, stid: int, ch1: int) -> tuple[int, int]:
+    header = pack_mbt_header_int({"syid": (48, syid)})
+    data = pack_mbt_data_int({
+        "rfid": (88, rfid),
+        "stid": (80, stid),
+        "ch1": (64, ch1),
+    })
+    return header, data
+
+
+class TestMbtParser:
+    """MBT bcst-opcode parsing. WISCOM De Pere is the motivating case —
+    its ADJ_STS_BCSTs arrive as MBT (m_type=12) and were dropped in v0.3.7."""
+
+    def test_adj_sts_extracts_neighbor(self):
+        header, data = pack_mbt_adj_sts(syid=0xB04, rfid=1, stid=204, ch1=0x0010)
+        parsed = parse_fdma_mbt_int(0x3C, header, data)
+        assert isinstance(parsed, AdjStsBcst)
+        assert parsed.rfss_id == 1
+        assert parsed.site_id == 204
+        assert parsed.channel_id == 0x0010
+        assert parsed.sysid == 0xB04
+
+    def test_net_sts_extracts_wacn_sysid(self):
+        header, data = pack_mbt_net_sts(syid=0xB04, wacn=0xBEE00, ch1=0x0001)
+        parsed = parse_fdma_mbt_int(0x3B, header, data)
+        assert isinstance(parsed, NetStsBcst)
+        assert parsed.wacn == 0xBEE00
+        assert parsed.sysid == 0xB04
+        assert parsed.cc_channel_id == 0x0001
+
+    def test_rfss_sts_extracts_rfss_site(self):
+        header, data = pack_mbt_rfss_sts(syid=0xB04, rfid=1, stid=7, ch1=0x0001)
+        parsed = parse_fdma_mbt_int(0x3A, header, data)
+        assert isinstance(parsed, RfssStsBcst)
+        assert parsed.sysid == 0xB04
+        assert parsed.rfss_id == 1
+        assert parsed.site_id == 7
+        assert parsed.cc_channel_id == 0x0001
+
+    def test_unhandled_opcode_returns_none(self):
+        # 0x00 is grp_v_ch_grant; we don't carry voice grants in the survey.
+        assert parse_fdma_mbt_int(0x00, 0, 0) is None
+
+    def test_byte_level_entry_validates_fmt_and_dispatches(self):
+        """Round-trip via the byte-level entry. Construct an Extended-Format
+        ADJ_STS_BCST MBT on the wire, hand it to parse_fdma_mbt, confirm
+        the same fields come back out."""
+        # The wire 80-bit header: fmt at bits 72..76 of the original (so the
+        # parser's `(header >> 72) & 0x1f` finds 0x17), opcode at bits 16..21
+        # of the original (parser's `(header >> 16) & 0x3f`). The parser then
+        # shifts by 16, so the per-opcode reads below are on (original << 16).
+        # We want syid=0xB04 to land at bits 48..59 of the shifted value =
+        # bits 32..43 of the original; rfid at shifted 24..31 = orig 8..15;
+        # stid at shifted 16..23 = orig 0..7.
+        header_int = 0
+        header_int |= 0x17 << 72              # fmt
+        header_int |= 0x3C << 16              # opcode
+        header_int |= (0xB04 & 0xFFF) << 32   # syid (orig 32..43)
+        header_int |= (1 & 0xFF) << 8         # rfid (orig 8..15)
+        header_int |= (204 & 0xFF) << 0       # stid (orig 0..7)
+        header_bytes = header_int.to_bytes(10, "big")
+
+        # Data block: ch1 at op25's shifted bits 80..95 = original bits 48..63.
+        # Encode as 8 bytes so original bits 48..63 = bytes 0..1.
+        data_int = (0x0010 & 0xFFFF) << 48
+        data_bytes = data_int.to_bytes(8, "big")
+
+        payload = header_bytes + b"\x00\x00" + data_bytes
+        parsed = parse_fdma_mbt(payload)
+        assert isinstance(parsed, AdjStsBcst)
+        assert parsed.sysid == 0xB04
+        assert parsed.rfss_id == 1
+        assert parsed.site_id == 204
+        assert parsed.channel_id == 0x0010
+
+    def test_non_extended_format_returns_none(self):
+        # fmt=0x16 (Confirmed Data) — parser should bail before reading opcode.
+        header_int = (0x16 << 72) | (0x3C << 16)
+        header_bytes = header_int.to_bytes(10, "big")
+        payload = header_bytes + b"\x00\x00" + b"\x00" * 8
+        assert parse_fdma_mbt(payload) is None
+
+    def test_short_payload_returns_none(self):
+        assert parse_fdma_mbt(b"") is None
+        assert parse_fdma_mbt(b"\x00" * 11) is None  # header + crc, no data
 
 
 def pack_sccb(rfid: int, stid: int, ch1: int, ch2: int) -> int:

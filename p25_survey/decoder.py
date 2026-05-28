@@ -42,6 +42,7 @@ from p25_survey.tsbk import (
     NetStsBcst,
     RfssStsBcst,
     Sccb,
+    parse_fdma_mbt,
     parse_fdma_tsbk,
     parse_tdma_pdu,
 )
@@ -49,10 +50,12 @@ from p25_survey.tsbk import (
 
 # Frame types emitted by op25_repeater.frame_assembler via msg.type():
 #   7  = TSBK   (FDMA control channel single-block)
-#   12 = MBT    (FDMA multi-block trunking — not parsed in v1)
+#   12 = MBT    (FDMA multi-block trunking — bcst opcodes parsed; needed for
+#               systems like WISCOM De Pere that send ADJ/RFSS/NET bcsts via MBT)
 #   18 = TDMA   (Phase 2 broadcast PDU)
 #   19 = LCW   (FDMA voice channel link-control word — voice; ignored)
 _FRAME_TYPE_TSBK = 7
+_FRAME_TYPE_MBT = 12
 _FRAME_TYPE_TDMA = 18
 
 
@@ -229,6 +232,8 @@ def _process_msg(msg, state: _DwellState) -> None:
     parsed = None
     if duid == _FRAME_TYPE_TSBK:
         parsed = parse_fdma_tsbk(body)
+    elif duid == _FRAME_TYPE_MBT:
+        parsed = parse_fdma_mbt(body)
     elif duid == _FRAME_TYPE_TDMA:
         parsed = parse_tdma_pdu(body)
     if parsed is None:

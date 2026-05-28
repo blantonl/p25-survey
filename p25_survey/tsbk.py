@@ -1,7 +1,7 @@
-"""P25 TSBK + TDMA broadcast PDU parser.
+"""P25 TSBK + MBT + TDMA broadcast PDU parser.
 
-Bit layouts ported from op25/gr-op25_repeater/apps/tk_p25.py (decode_tsbk
-and decode_tdma_ptt). Opcodes handled:
+Bit layouts ported from op25/gr-op25_repeater/apps/tk_p25.py (decode_tsbk,
+decode_mbt_data, and decode_tdma_ptt). Opcodes handled:
 
   FDMA TSBK (80-bit, 10-byte wire format; op25 left-shifts 16 to get 96-bit
   working integer with opcode at bits 88..94):
@@ -12,6 +12,16 @@ and decode_tdma_ptt). Opcodes handled:
     0x3b  NET_STS_BCST           — WACN / system ID
     0x3c  ADJ_STS_BCST           — neighbor site
     0x3d  IDEN_UP                — band plan (legacy 800/700)
+
+  FDMA MBT (Multi-Block Trunking — Extended Format only, fmt=0x17). Op25
+  frame_assembler emits these as m_type=12; wire layout is a 10-byte header
+  (no CRC, then 2-byte CRC gap, then the data block(s)). Some VHF/UHF P25
+  systems (notably WISCOM De Pere in Wisconsin) broadcast status / neighbor
+  info via MBT instead of TSBK; if we don't parse these the survey shows
+  zero neighbors on those sites. Opcodes handled here mirror the bcst set:
+    0x3a  RFSS_STS_BCST          — RFSS / site
+    0x3b  NET_STS_BCST           — WACN / system ID
+    0x3c  ADJ_STS_BCST           — neighbor site (header carries syid too)
 
   TDMA broadcast PDU (op = first byte of msg):
     0xf3  IDEN_UP_TDMA Extended
@@ -243,6 +253,86 @@ def _parse_fdma_tsbk_int(opcode: int, tsbk: int) -> ParsedTsbk | None:
         stid = (tsbk >> 40) & 0xFF
         ch1 = (tsbk >> 24) & 0xFFFF
         return AdjStsBcst(rfss_id=rfid, site_id=stid, channel_id=ch1)
+
+    return None
+
+
+# ---------------------------------------------------------------------------
+# FDMA MBT parser (Multi-Block Trunking — Extended Format only)
+# ---------------------------------------------------------------------------
+
+
+# Format field value that identifies an Extended Format MBT. Other fmt
+# values (e.g. Confirmed Data) exist but op25 doesn't decode them, and the
+# bcst opcodes we care about are always Extended.
+_MBT_FMT_EXTENDED = 0x17
+
+
+def parse_fdma_mbt(payload: bytes) -> ParsedTsbk | None:
+    """Parse a FDMA MBT PDU as emitted by op25's frame_assembler (m_type=12).
+
+    Wire layout — matches op25 tk_p25.decode_msg:
+        bytes [0:10]   = 80-bit MBT header (no CRC)
+        bytes [10:12]  = 16-bit CRC of the header (ignored here)
+        bytes [12:]    = MBT data block(s); length depends on opcode
+
+    Returns None for non-Extended formats and for opcodes we don't track.
+    Caller (decoder._process_msg) treats `None` as "skip this frame".
+    """
+    if len(payload) < 13:
+        return None
+    header = int.from_bytes(payload[:10], "big")
+    data = int.from_bytes(payload[12:], "big")
+
+    fmt = (header >> 72) & 0x1F
+    if fmt != _MBT_FMT_EXTENDED:
+        return None
+    opcode = (header >> 16) & 0x3F
+
+    # op25 shifts the header/data values to align bit positions for the
+    # per-opcode decoders. We match that convention so the bit indices below
+    # line up 1:1 with tk_p25.decode_mbt_data.
+    header_shifted = header << 16
+    data_shifted = data << 32
+
+    return _parse_fdma_mbt_int(opcode, header_shifted, data_shifted)
+
+
+def parse_fdma_mbt_int(opcode: int, header: int, mbt_data: int) -> ParsedTsbk | None:
+    """Test-friendly entry that takes the same pre-shifted ints op25 uses.
+
+    `header` is the 80-bit MBT header left-shifted by 16 (so its top bits
+    line up with op25's `header` variable). `mbt_data` is the data block(s)
+    left-shifted by 32 (matching op25's `mbt_data` variable). See
+    `parse_fdma_mbt` for the byte-level entry.
+    """
+    return _parse_fdma_mbt_int(opcode, header, mbt_data)
+
+
+def _parse_fdma_mbt_int(opcode: int, header: int, mbt_data: int) -> ParsedTsbk | None:
+    # Bit indices and field widths mirror tk_p25.decode_mbt_data (boatbod op25
+    # gr-op25_repeater/apps/tk_p25.py:667-766). The shifted form below is
+    # *not* a guess — it's a direct port. If op25 changes these layouts the
+    # only correct response is to update both here and the comment.
+    if opcode == 0x3C:  # ADJ_STS_BCST (MBT) — neighbor site, with syid in header
+        syid = (header >> 48) & 0xFFF
+        rfid = (header >> 24) & 0xFF
+        stid = (header >> 16) & 0xFF
+        ch1 = (mbt_data >> 80) & 0xFFFF
+        return AdjStsBcst(rfss_id=rfid, site_id=stid, channel_id=ch1, sysid=syid)
+
+    if opcode == 0x3B:  # NET_STS_BCST (MBT)
+        syid = (header >> 48) & 0xFFF
+        wacn = (mbt_data >> 76) & 0xFFFFF
+        ch1 = (mbt_data >> 56) & 0xFFFF
+        return NetStsBcst(wacn=wacn, sysid=syid, cc_channel_id=ch1)
+
+    if opcode == 0x3A:  # RFSS_STS_BCST (MBT)
+        syid = (header >> 48) & 0xFFF
+        rfid = (mbt_data >> 88) & 0xFF
+        stid = (mbt_data >> 80) & 0xFF
+        ch1 = (mbt_data >> 64) & 0xFFFF
+        return RfssStsBcst(sysid=syid, rfss_id=rfid, site_id=stid, cc_channel_id=ch1)
 
     return None
 

@@ -15,11 +15,17 @@ import pytest
 from p25_survey.decoder import (
     Op25NotInstalledError,
     _DwellState,
+    _FRAME_TYPE_MBT,
     _FRAME_TYPE_TSBK,
     _process_msg,
     ensure_op25_importable,
 )
-from tests.test_tsbk import pack_iden_up_legacy, pack_sccb
+from tests.test_tsbk import (
+    pack_iden_up_legacy,
+    pack_iden_up_vu,
+    pack_mbt_adj_sts,
+    pack_sccb,
+)
 
 
 class _StubMsg:
@@ -40,6 +46,25 @@ def _tsbk_msg(tsbk96: int, nac: int = 0x293) -> _StubMsg:
     """Frame_assembler TSBK payload: NAC (2 bytes) + 80-bit wire TSBK."""
     wire = (tsbk96 >> 16).to_bytes(10, "big")
     return _StubMsg(_FRAME_TYPE_TSBK, nac.to_bytes(2, "big") + wire)
+
+
+def _mbt_adj_msg(syid: int, rfid: int, stid: int, ch1: int, nac: int = 0x293) -> _StubMsg:
+    """Frame_assembler MBT (m_type=12) payload for ADJ_STS_BCST.
+
+    Layout matches op25 tk_p25.decode_msg's m_type==12 path:
+      NAC (2 bytes) + 10-byte header + 2 CRC bytes + 8-byte data block.
+    """
+    header_int = 0
+    header_int |= 0x17 << 72              # fmt=Extended
+    header_int |= 0x3C << 16              # opcode=ADJ_STS_BCST
+    header_int |= (syid & 0xFFF) << 32    # original bits 32..43 → shifted 48..59
+    header_int |= (rfid & 0xFF) << 8      # original bits 8..15 → shifted 24..31
+    header_int |= (stid & 0xFF) << 0      # original bits 0..7 → shifted 16..23
+    header_bytes = header_int.to_bytes(10, "big")
+    data_int = (ch1 & 0xFFFF) << 48       # original bits 48..63 → shifted 80..95
+    data_bytes = data_int.to_bytes(8, "big")
+    body = header_bytes + b"\x00\x00" + data_bytes
+    return _StubMsg(_FRAME_TYPE_MBT, nac.to_bytes(2, "big") + body)
 
 
 class TestSccbProcessing:
@@ -158,3 +183,51 @@ class TestEnsureOp25Importable:
             ensure_op25_importable()
         msg = str(info.value)
         assert "boatbod" in msg.lower() or "install.sh" in msg
+
+
+class TestMbtNeighborProcessing:
+    """End-to-end: MBT-encoded ADJ_STS_BCST flows through _process_msg the
+    same way TSBK-encoded ADJ_STS_BCST does. This covers the WISCOM De Pere
+    regression — neighbors broadcast via MBT used to be dropped on the
+    floor, leaving the live table empty.
+    """
+
+    def test_mbt_adj_sts_resolves_neighbor_after_iden(self):
+        state = _DwellState()
+        # IDEN_UP first (VHF band): base 150.815 MHz, 7.5 kHz step.
+        iden_tsbk = pack_iden_up_vu(
+            iden=1, freq_5hz=int(150_815_000 / 5), spac=60, toff_signed=-180
+        )
+        _process_msg(_tsbk_msg(iden_tsbk), state)
+        # Now an MBT ADJ_STS_BCST on table=1, channel=0x10.
+        _process_msg(_mbt_adj_msg(syid=0xB04, rfid=1, stid=204, ch1=0x1010), state)
+        assert 0x1010 in state.neighbors
+        n = state.neighbors[0x1010]
+        assert n.rfss_id == 1
+        assert n.site_id == 204
+        assert n.sysid == 0xB04
+        assert n.freq_hz == 150_815_000 + 16 * 7_500
+
+    def test_mbt_adj_sts_pending_when_iden_unknown(self):
+        """No IDEN_UP yet → neighbor queues as pending, resolves when iden lands.
+        Mirrors the TSBK pending path so MBT doesn't skip the queue."""
+        state = _DwellState()
+        _process_msg(_mbt_adj_msg(syid=0xB04, rfid=1, stid=204, ch1=0x1010), state)
+        assert 0x1010 not in state.neighbors
+        assert len(state.pending_neighbors) == 1
+
+        iden_tsbk = pack_iden_up_vu(
+            iden=1, freq_5hz=int(150_815_000 / 5), spac=60, toff_signed=-180
+        )
+        _process_msg(_tsbk_msg(iden_tsbk), state)
+        assert 0x1010 in state.neighbors
+        assert state.pending_neighbors == []
+
+    def test_mbt_broadcast_counts_toward_settle(self):
+        """state.broadcast_count must include MBT broadcasts — otherwise
+        a single-site WISCOM dwell would never reach the early-exit threshold
+        and would always burn the full max_dwell on TSBK-only sites."""
+        state = _DwellState()
+        before = state.broadcast_count
+        _process_msg(_mbt_adj_msg(syid=0xB04, rfid=1, stid=204, ch1=0x1010), state)
+        assert state.broadcast_count == before + 1

@@ -163,6 +163,39 @@ class TestFindPeaks:
         # Strong tone should be at least 8 dB above floor (matching threshold).
         assert peaks and all(p.power_db >= 8.0 for p in peaks)
 
+    def test_multi_step_picks_closer_grid(self):
+        # Tone at +312_500 Hz from CENTER 851.5 MHz → absolute 851.812500 MHz.
+        # Compare 5 kHz, 6.25 kHz grids:
+        #   851_812_500 / 5_000  = 170_362.5  → snaps to 851_810_000 (±2500 Hz)
+        #   851_812_500 / 6_250  = 136_290    → snaps to 851_812_500 (0 Hz)
+        # The 6.25 kHz grid is strictly closer; the picker must pick it.
+        iq = make_iq([312_500], self.SAMPLE_RATE, snr_db=30)
+        peaks = find_peaks(
+            iq, self.SAMPLE_RATE, self.CENTER,
+            threshold_db=10, step_hz=(5_000, 6_250),
+        )
+        nearby = [p for p in peaks if abs(p.freq_hz - 851_812_500) <= 10_000]
+        assert nearby, f"expected a peak near 851.8125 MHz, got {peaks}"
+        assert nearby[0].freq_hz == 851_812_500
+
+    def test_multi_step_falls_back_to_only_grid_in_list(self):
+        # Single-element tuple should behave identically to passing the int.
+        iq = make_iq([100_000], self.SAMPLE_RATE, snr_db=30)
+        single = find_peaks(iq, self.SAMPLE_RATE, self.CENTER, threshold_db=10, step_hz=12_500)
+        tuple_arg = find_peaks(iq, self.SAMPLE_RATE, self.CENTER, threshold_db=10,
+                               step_hz=(12_500,))
+        assert [p.freq_hz for p in single] == [p.freq_hz for p in tuple_arg]
+
+    def test_invalid_step_argument_rejected(self):
+        iq = make_iq([100_000], self.SAMPLE_RATE, snr_db=30)
+        import pytest
+        with pytest.raises(ValueError):
+            find_peaks(iq, self.SAMPLE_RATE, self.CENTER, step_hz=())
+        with pytest.raises(ValueError):
+            find_peaks(iq, self.SAMPLE_RATE, self.CENTER, step_hz=(12_500, 0))
+        with pytest.raises(ValueError):
+            find_peaks(iq, self.SAMPLE_RATE, self.CENTER, step_hz=0)
+
 
 # ---------------------------------------------------------------------------
 # scan_range — full pipeline with synthetic SDR

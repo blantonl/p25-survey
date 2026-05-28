@@ -84,7 +84,7 @@ def find_peaks(
     sample_rate_hz: float,
     center_freq_hz: int,
     threshold_db: float = 8.0,
-    step_hz: int = 12_500,
+    step_hz: int | tuple[int, ...] = 12_500,
     min_separation_hz: int = 25_000,
     usable_bw_fraction: float = 0.8,
     nperseg: int = DEFAULT_NPERSEG,
@@ -100,8 +100,16 @@ def find_peaks(
          the bin with maximum PSD as that group's peak.
       6. Drop peaks outside the usable bandwidth (rolloff guardband).
       7. Snap each peak's center frequency to the nearest step_hz multiple.
+         If `step_hz` is a tuple, snap to whichever grid in the tuple lands
+         closest to the raw peak — handy for VHF/UHF systems whose idens
+         use different channel spacings (a 154.8125 MHz peak snaps to the
+         6.25 kHz grid exactly, but to the 5 kHz grid 2.5 kHz off; we pick
+         the closer match per-peak).
       8. Coalesce peaks within min_separation_hz, keeping the stronger.
     """
+    step_options: tuple[int, ...] = (step_hz,) if isinstance(step_hz, int) else tuple(step_hz)
+    if not step_options or any(s <= 0 for s in step_options):
+        raise ValueError("step_hz must be a positive int or a tuple of positive ints")
     if len(iq) < nperseg:
         nperseg = max(64, len(iq) // 2)
     if len(iq) < 64:
@@ -145,7 +153,14 @@ def find_peaks(
         local = int(np.argmax(run_psd))
         peak_offset_hz = float(run_f[local])
         absolute_hz = center_freq_hz + peak_offset_hz
-        snapped_hz = int(round(absolute_hz / step_hz) * step_hz)
+        # Pick the step grid that snaps closest to the raw peak. With a
+        # single step this is just `round(/step)*step`; with multiple steps
+        # we prefer the grid where the raw peak lands closest to a grid
+        # line, which is the grid most likely to correspond to a real CC.
+        snapped_hz = min(
+            (int(round(absolute_hz / s) * s) for s in step_options),
+            key=lambda v: abs(absolute_hz - v),
+        )
         peaks.append(Candidate(
             freq_hz=snapped_hz,
             power_db=float(run_psd[local] - noise_floor),
@@ -184,7 +199,7 @@ def scan_range(
     sample_rate_hz: float,
     iq_provider: IqProvider,
     threshold_db: float = 8.0,
-    step_hz: int = 12_500,
+    step_hz: int | tuple[int, ...] = 12_500,
     usable_bw_fraction: float = 0.8,
     min_separation_hz: int = 25_000,
     nperseg: int = DEFAULT_NPERSEG,

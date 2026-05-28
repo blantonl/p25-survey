@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from p25_survey.cli import _msps, _subscription_status
+from p25_survey.cli import _khz_list, _msps, _subscription_status
 
 
 class TestSubscriptionStatus:
@@ -79,3 +79,44 @@ class TestMspsParser:
         import pytest
         with pytest.raises(argparse.ArgumentTypeError):
             _msps("fast")
+
+
+class TestKhzListParser:
+    """--step accepts a single value or a comma-separated list."""
+
+    def test_single_value(self):
+        assert _khz_list("12.5") == (12_500,)
+
+    def test_multiple_values_sorted_dedup(self):
+        # Order in → sorted ascending, dupes collapsed.
+        assert _khz_list("12.5,6.25,7.5,6.25") == (6_250, 7_500, 12_500)
+
+    def test_whitespace_tolerated(self):
+        assert _khz_list("6.25, 7.5 , 12.5") == (6_250, 7_500, 12_500)
+
+    def test_trailing_comma_ignored(self):
+        assert _khz_list("12.5,") == (12_500,)
+
+    def test_rejects_empty(self):
+        import argparse
+        import pytest
+        with pytest.raises(argparse.ArgumentTypeError):
+            _khz_list("")
+        with pytest.raises(argparse.ArgumentTypeError):
+            _khz_list("   ")
+        with pytest.raises(argparse.ArgumentTypeError):
+            _khz_list(",")
+
+    def test_rejects_non_numeric(self):
+        import argparse
+        import pytest
+        with pytest.raises(argparse.ArgumentTypeError):
+            _khz_list("12.5,abc")
+
+    def test_rejects_non_positive(self):
+        import argparse
+        import pytest
+        with pytest.raises(argparse.ArgumentTypeError):
+            _khz_list("0")
+        with pytest.raises(argparse.ArgumentTypeError):
+            _khz_list("12.5,-6.25")
