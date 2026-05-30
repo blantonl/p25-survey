@@ -281,14 +281,17 @@ def _write_new_sites(out: StringIO, records: list[SurveyRecord],
             out.write(f"- Band plan ({len(r.iden_up)} entries):\n")
             for ie in r.iden_up:
                 kind = f"TDMA x{ie.slots_per_carrier}" if ie.is_tdma else "FDMA"
+                if ie.bandwidth_hz:
+                    kind += f", {ie.bandwidth_hz / 1e3:g} kHz BW"
                 out.write(f"    - iden {ie.iden}: base {_fmt_freq_mhz(ie.base_freq_hz)}, "
                           f"step {ie.step_hz / 1e3:g} kHz, "
                           f"offset {ie.offset_hz / 1e6:+g} MHz [{kind}]\n")
         if r.neighbors:
             out.write(f"- Reported neighbors:\n")
             for n in sorted(r.neighbors, key=lambda x: x.freq_hz):
+                conv = " (conventional)" if n.conventional else ""
                 out.write(f"    - {_fmt_freq_mhz(n.freq_hz)}, "
-                          f"RFSS {n.rfss_id}, Site {n.site_id}\n")
+                          f"RFSS {n.rfss_id}, Site {n.site_id}{conv}\n")
         out.write("\n")
 
 

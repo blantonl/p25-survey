@@ -47,6 +47,10 @@ from dataclasses import dataclass
 # channel is only TDMA when it carries 2+ logical slots per carrier.
 _SLOTS_PER_CARRIER = (1, 1, 1, 2, 4, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2)
 
+# IDEN_UP_VU "BW VU" receiver-bandwidth field (octet 2, bits 3-0).
+# TIA-102.AABC-B §6.2.29: %0100 = 6.25 kHz, %0101 = 12.5 kHz; others reserved.
+_BW_VU_HZ = {0x4: 6_250, 0x5: 12_500}
+
 
 # ---------------------------------------------------------------------------
 # Result types
@@ -62,6 +66,7 @@ class IdenUp:
     offset_hz: int            # signed; mobile uplink offset
     is_tdma: bool = False
     slots_per_carrier: int = 1
+    bandwidth_hz: int | None = None  # channel bandwidth (IDEN_UP_VU BW field)
     opcode: int = 0           # source opcode for debugging
 
 
@@ -71,6 +76,9 @@ class RfssStsBcst:
     rfss_id: int
     site_id: int
     cc_channel_id: int
+    # A bit (octet 3, bit 4): site has an active network connection to the RFSS
+    # controller. False == failsoft / site-trunking. None when not decoded.
+    network_active: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -87,6 +95,12 @@ class AdjStsBcst:
     channel_id: int
     sysid: int | None = None  # set by TDMA explicit (0xfa-family)
     wacn: int | None = None   # set by TDMA extended explicit (0xfe)
+    # ADJ_STS_BCST octet-3 signaling bits. None when not decoded (e.g. MBT/TDMA
+    # paths, whose op25-aligned bit offsets we don't reproduce here).
+    conventional: bool | None = None    # C (bit 7): advertising a conventional channel
+    site_failure: bool | None = None    # F (bit 6): neighbor is in a failure condition
+    valid: bool | None = None           # V (bit 5): info current (0 == last-known/stale)
+    network_active: bool | None = None  # A (bit 4): neighbor has active RFSS network conn
 
 
 @dataclass(frozen=True)
@@ -176,6 +190,7 @@ def parse_fdma_tsbk_int(opcode: int, tsbk: int) -> ParsedTsbk | None:
 def _parse_fdma_tsbk_int(opcode: int, tsbk: int) -> ParsedTsbk | None:
     if opcode == 0x34:  # IDEN_UP_VU
         iden = (tsbk >> 76) & 0xF
+        bw_vu = (tsbk >> 72) & 0xF  # octet 2, bits 3-0
         toff0 = (tsbk >> 58) & 0x3FFF
         spac = (tsbk >> 48) & 0x3FF
         freq = (tsbk >> 16) & 0xFFFFFFFF
@@ -189,6 +204,7 @@ def _parse_fdma_tsbk_int(opcode: int, tsbk: int) -> ParsedTsbk | None:
             base_freq_hz=freq * 5,
             step_hz=step_hz,
             offset_hz=toff * step_hz,
+            bandwidth_hz=_BW_VU_HZ.get(bw_vu),
             opcode=opcode,
         )
 
@@ -246,7 +262,10 @@ def _parse_fdma_tsbk_int(opcode: int, tsbk: int) -> ParsedTsbk | None:
         rfid = (tsbk >> 48) & 0xFF
         stid = (tsbk >> 40) & 0xFF
         chan = (tsbk >> 24) & 0xFFFF
-        return RfssStsBcst(sysid=syid, rfss_id=rfid, site_id=stid, cc_channel_id=chan)
+        # A bit: octet 3 (global bits 64-71), bit 4 -> global bit 68.
+        active = bool((tsbk >> 68) & 1)
+        return RfssStsBcst(sysid=syid, rfss_id=rfid, site_id=stid,
+                           cc_channel_id=chan, network_active=active)
 
     if opcode == 0x3B:  # NET_STS_BCST
         wacn = (tsbk >> 52) & 0xFFFFF
@@ -258,7 +277,15 @@ def _parse_fdma_tsbk_int(opcode: int, tsbk: int) -> ParsedTsbk | None:
         rfid = (tsbk >> 48) & 0xFF
         stid = (tsbk >> 40) & 0xFF
         ch1 = (tsbk >> 24) & 0xFFFF
-        return AdjStsBcst(rfss_id=rfid, site_id=stid, channel_id=ch1)
+        # Octet-3 signaling bits (octet 3 == global bits 64-71): C=bit7 (71),
+        # F=bit6 (70), V=bit5 (69), A=bit4 (68).
+        return AdjStsBcst(
+            rfss_id=rfid, site_id=stid, channel_id=ch1,
+            conventional=bool((tsbk >> 71) & 1),
+            site_failure=bool((tsbk >> 70) & 1),
+            valid=bool((tsbk >> 69) & 1),
+            network_active=bool((tsbk >> 68) & 1),
+        )
 
     return None
 

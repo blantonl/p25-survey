@@ -105,14 +105,32 @@ def _fmt_neighbor_site(ref: dict | None) -> str:
     return " / ".join(bits)
 
 
+def _fmt_neighbor_flags(n) -> str:
+    """Trailing status-flag tag for a neighbor row. Only flags worth a glance:
+    a conventional channel, a site in failure, a stale/last-known entry, or a
+    neighbor running failsoft. Empty when nothing notable (or nothing decoded)."""
+    tags = []
+    if n.conventional:
+        tags.append("conventional")
+    if n.site_failure:
+        tags.append("FAILURE")
+    if n.network_active is False:
+        tags.append("failsoft")
+    if n.valid is False:
+        tags.append("stale")
+    return f"  [{', '.join(tags)}]" if tags else ""
+
+
 def render_record(record: SurveyRecord, out: StringIO) -> None:
     """Write one record's section."""
     header = f"{_fmt_freq_mhz(record.freq_hz)}  WACN {_fmt_hex(record.wacn, 5)}  " \
              f"SYS {_fmt_hex(record.sysid, 3)}  NAC {_fmt_hex(record.nac, 3)}"
     out.write(header + "\n")
     out.write("-" * len(header) + "\n")
+    failsoft = ("  [FAILSOFT — no active RFSS network connection]"
+                if record.site_network_active is False else "")
     out.write(f"  RFSS / Site:  {record.rfss_id if record.rfss_id is not None else '—'}"
-              f" / {record.site_id if record.site_id is not None else '—'}\n")
+              f" / {record.site_id if record.site_id is not None else '—'}{failsoft}\n")
     out.write(f"  Detected at:  {record.ts}\n")
     out.write(f"  Dwell:        {record.dwell_ms} ms"
               f"  ({'complete' if record.complete else 'partial'})\n")
@@ -129,6 +147,8 @@ def render_record(record: SurveyRecord, out: StringIO) -> None:
                   f"{'y' if len(record.iden_up) == 1 else 'ies'}\n")
         for ie in record.iden_up:
             kind = f"TDMA x{ie.slots_per_carrier}" if ie.is_tdma else "FDMA"
+            if ie.bandwidth_hz:
+                kind += f", {ie.bandwidth_hz / 1e3:g} kHz BW"
             sign = "+" if ie.offset_hz >= 0 else "-"
             out.write(
                 f"    iden {ie.iden}: base {_fmt_freq_mhz(ie.base_freq_hz)}, "
@@ -166,6 +186,7 @@ def render_record(record: SurveyRecord, out: StringIO) -> None:
                 f"    {_fmt_freq_mhz(n.freq_hz):<14} "
                 f"{n.rfss_id:>4} {n.site_id:>4} "
                 f"{_fmt_hex(n.wacn, 5):>6} {_fmt_hex(n.sysid, 3):>4}  {site_txt}"
+                f"{_fmt_neighbor_flags(n)}"
             )
             out.write(row.rstrip() + "\n")
     else:

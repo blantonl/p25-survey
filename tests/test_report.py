@@ -10,7 +10,7 @@ from __future__ import annotations
 from io import StringIO
 
 from p25_survey.report import _fmt_neighbor_site, _fmt_rr, render_record
-from p25_survey.survey import NeighborSite, SurveyRecord
+from p25_survey.survey import IdenUpEntry, NeighborSite, SurveyRecord
 
 
 def _record(nac=None, rr=None) -> SurveyRecord:
@@ -135,3 +135,43 @@ class TestNeighborNamesInReport:
 
     def test_fmt_neighbor_site_handles_no_enrichment(self):
         assert _fmt_neighbor_site(None) == ""
+
+
+class TestStatusFlagRendering:
+    def test_failsoft_site_annotated(self):
+        rec = _full_record()
+        rec.site_network_active = False
+        text = _rendered(rec)
+        assert "FAILSOFT" in text
+
+    def test_active_site_not_annotated(self):
+        rec = _full_record()
+        rec.site_network_active = True
+        assert "FAILSOFT" not in _rendered(rec)
+
+    def test_band_plan_shows_bandwidth(self):
+        rec = _full_record()
+        rec.iden_up = [IdenUpEntry(iden=1, base_freq_hz=150_815_000, step_hz=7_500,
+                                   offset_hz=0, bandwidth_hz=12_500)]
+        text = _rendered(rec)
+        assert "FDMA, 12.5 kHz BW" in text
+
+    def test_neighbor_flags_rendered(self):
+        rec = _full_record(neighbors=[
+            NeighborSite(freq_hz=851_100_000, rfss_id=2, site_id=30,
+                         conventional=True, network_active=False, valid=False),
+        ])
+        text = _rendered(rec)
+        assert "conventional" in text
+        assert "failsoft" in text
+        assert "stale" in text
+
+    def test_healthy_neighbor_has_no_flag_tag(self):
+        rec = _full_record(neighbors=[
+            NeighborSite(freq_hz=851_100_000, rfss_id=2, site_id=30,
+                         conventional=False, site_failure=False,
+                         valid=True, network_active=True),
+        ])
+        # No bracketed flag tag for a clean, active, valid trunked neighbor.
+        line = [ln for ln in _rendered(rec).splitlines() if "851.10000" in ln][0]
+        assert "[" not in line

@@ -67,6 +67,7 @@ class _DwellState:
     sysid: int | None = None
     rfss_id: int | None = None
     site_id: int | None = None
+    site_network_active: bool | None = None  # RFSS_STS_BCST A bit
     freq_table: FreqTable = field(default_factory=FreqTable)
     neighbors: dict[int, NeighborSite] = field(default_factory=dict)  # keyed by channel_id
     pending_neighbors: list[AdjStsBcst] = field(default_factory=list)
@@ -215,6 +216,16 @@ def ensure_op25_importable() -> None:
     raise Op25NotInstalledError("\n".join(lines))
 
 
+def _neighbor_from_adj(adj: AdjStsBcst, freq_hz: int) -> NeighborSite:
+    """Build a NeighborSite from a resolved ADJ_STS_BCST, carrying its flags."""
+    return NeighborSite(
+        freq_hz=freq_hz, rfss_id=adj.rfss_id, site_id=adj.site_id,
+        sysid=adj.sysid, wacn=adj.wacn,
+        conventional=adj.conventional, site_failure=adj.site_failure,
+        valid=adj.valid, network_active=adj.network_active,
+    )
+
+
 def _process_msg(msg, state: _DwellState) -> None:
     """Decode one frame_assembler message and update dwell state."""
     state.frame_count += 1
@@ -249,10 +260,7 @@ def _process_msg(msg, state: _DwellState) -> None:
             for adj in state.pending_neighbors:
                 f = state.freq_table.channel_id_to_frequency(adj.channel_id)
                 if f is not None:
-                    state.neighbors[adj.channel_id] = NeighborSite(
-                        freq_hz=f, rfss_id=adj.rfss_id, site_id=adj.site_id,
-                        sysid=adj.sysid, wacn=adj.wacn,
-                    )
+                    state.neighbors[adj.channel_id] = _neighbor_from_adj(adj, f)
                 else:
                     still_pending.append(adj)
             state.pending_neighbors = still_pending
@@ -271,6 +279,8 @@ def _process_msg(msg, state: _DwellState) -> None:
     elif isinstance(parsed, RfssStsBcst):
         state.rfss_id = parsed.rfss_id
         state.site_id = parsed.site_id
+        if parsed.network_active is not None:
+            state.site_network_active = parsed.network_active
         if state.sysid is None:
             state.sysid = parsed.sysid
     elif isinstance(parsed, Sccb):
@@ -291,10 +301,7 @@ def _process_msg(msg, state: _DwellState) -> None:
         state.last_neighbor_ts = time.monotonic()
         f = state.freq_table.channel_id_to_frequency(parsed.channel_id)
         if f is not None:
-            state.neighbors[parsed.channel_id] = NeighborSite(
-                freq_hz=f, rfss_id=parsed.rfss_id, site_id=parsed.site_id,
-                sysid=parsed.sysid, wacn=parsed.wacn,
-            )
+            state.neighbors[parsed.channel_id] = _neighbor_from_adj(parsed, f)
         else:
             state.pending_neighbors.append(parsed)
 
@@ -310,6 +317,7 @@ def _state_to_record(state: _DwellState, freq_hz: int, dwell_ms: int,
             offset_hz=i.offset_hz,
             is_tdma=i.is_tdma,
             slots_per_carrier=i.slots_per_carrier,
+            bandwidth_hz=i.bandwidth_hz,
         )
         for i in state.freq_table.all_idens()
     ]
@@ -348,6 +356,7 @@ def _state_to_record(state: _DwellState, freq_hz: int, dwell_ms: int,
         nac=state.nac,
         rfss_id=state.rfss_id,
         site_id=state.site_id,
+        site_network_active=state.site_network_active,
         neighbors=sorted(state.neighbors.values(), key=lambda n: n.freq_hz),
         secondary_cc=sorted(state.secondary_cc.values()),
         iden_up=iden_up,

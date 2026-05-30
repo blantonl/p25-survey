@@ -105,6 +105,31 @@ class TestJsonRoundTrip:
         rec2 = SurveyRecord.from_json_dict(d)
         assert rec2.neighbors[0].wacn is None
 
+    def test_status_flags_and_bandwidth_round_trip(self):
+        rec = SurveyRecord(
+            freq_hz=851_000_000,
+            site_network_active=False,  # failsoft
+            neighbors=[NeighborSite(freq_hz=851_100_000, rfss_id=1, site_id=2,
+                                    conventional=True, site_failure=False,
+                                    valid=False, network_active=True)],
+            iden_up=[IdenUpEntry(iden=1, base_freq_hz=150_815_000, step_hz=7_500,
+                                 offset_hz=0, bandwidth_hz=12_500)],
+        )
+        rec2 = SurveyRecord.from_json_dict(rec.to_json_dict())
+        assert rec2.site_network_active is False
+        n = rec2.neighbors[0]
+        assert (n.conventional, n.valid, n.network_active) == (True, False, True)
+        assert rec2.iden_up[0].bandwidth_hz == 12_500
+
+    def test_status_flags_absent_default_to_none(self):
+        # Files written before this feature won't carry the new keys.
+        rec = SurveyRecord.from_json_dict({
+            "freq_hz": 851_000_000,
+            "neighbors": [{"freq_hz": 851_100_000, "rfss_id": 1, "site_id": 2}],
+        })
+        assert rec.site_network_active is None
+        assert rec.neighbors[0].network_active is None
+
 
 # ---------------------------------------------------------------------------
 # SurveyWriter

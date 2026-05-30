@@ -32,6 +32,11 @@ class NeighborSite:
     site_id: int
     sysid: int | None = None
     wacn: int | None = None
+    # ADJ_STS_BCST status flags (None when not decoded; see tsbk.AdjStsBcst).
+    conventional: bool | None = None
+    site_failure: bool | None = None
+    valid: bool | None = None
+    network_active: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -42,6 +47,7 @@ class IdenUpEntry:
     offset_hz: int
     is_tdma: bool = False
     slots_per_carrier: int = 1
+    bandwidth_hz: int | None = None
 
 
 @dataclass
@@ -63,6 +69,9 @@ class SurveyRecord:
     nac: int | None = None
     rfss_id: int | None = None
     site_id: int | None = None
+    # RFSS_STS_BCST A bit for this site: True == active RFSS network connection,
+    # False == failsoft / site-trunking, None == not decoded.
+    site_network_active: bool | None = None
     neighbors: list[NeighborSite] = field(default_factory=list)
     secondary_cc: list[int] = field(default_factory=list)
     iden_up: list[IdenUpEntry] = field(default_factory=list)
@@ -113,6 +122,7 @@ class SurveyRecord:
             nac=d.get("nac"),
             rfss_id=d.get("rfss_id"),
             site_id=d.get("site_id"),
+            site_network_active=d.get("site_network_active"),
             neighbors=neighbors,
             secondary_cc=list(d.get("secondary_cc", []) or []),
             iden_up=iden_up,

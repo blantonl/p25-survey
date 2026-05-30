@@ -292,6 +292,12 @@ class TestRfssStsBcst:
         assert result.site_id == 7
         assert result.cc_channel_id == 0x1023
 
+    def test_network_active_bit(self):
+        # A bit (octet 3, bit 4 -> global bit 68): site has live RFSS link.
+        base = pack_rfss_sts(syid=0x1A4, rfid=1, stid=7, chan=0x1023)
+        assert parse_fdma_tsbk_int(0x3A, base).network_active is False  # failsoft
+        assert parse_fdma_tsbk_int(0x3A, base | (1 << 68)).network_active is True
+
 
 class TestAdjStsBcst:
     def test_round_trip(self):
@@ -303,6 +309,20 @@ class TestAdjStsBcst:
         assert result.channel_id == 0x2055
         assert result.sysid is None  # FDMA 0x3c doesn't carry sysid
         assert result.wacn is None
+
+    def test_status_flags(self):
+        # Octet-3 bits: C=71, F=70, V=69, A=68. All clear by default.
+        base = pack_adj_sts(rfid=2, stid=15, ch1=0x2055)
+        r = parse_fdma_tsbk_int(0x3C, base)
+        assert (r.conventional, r.site_failure, r.valid, r.network_active) == \
+               (False, False, False, False)
+        # A healthy trunked neighbor: valid + active, not conventional/failed.
+        r = parse_fdma_tsbk_int(0x3C, base | (1 << 69) | (1 << 68))
+        assert r.valid is True and r.network_active is True
+        assert r.conventional is False and r.site_failure is False
+        # Conventional channel advertisement, and a failed site.
+        assert parse_fdma_tsbk_int(0x3C, base | (1 << 71)).conventional is True
+        assert parse_fdma_tsbk_int(0x3C, base | (1 << 70)).site_failure is True
 
 
 class TestSccb:
@@ -335,6 +355,14 @@ class TestIdenUpVu:
         tsbk = pack_iden_up_vu(iden=0, freq_5hz=170_201_250, spac=100, toff_signed=3600)
         result = parse_fdma_tsbk_int(0x34, tsbk)
         assert result.offset_hz == 45_000_000
+
+    def test_bandwidth_field(self):
+        # BW VU (octet 2, bits 3-0 -> global bits 72-75): %0100=6.25k, %0101=12.5k.
+        base = pack_iden_up_vu(iden=2, freq_5hz=30_163_000, spac=60, toff_signed=0)
+        assert parse_fdma_tsbk_int(0x34, base | (0x5 << 72)).bandwidth_hz == 12_500
+        assert parse_fdma_tsbk_int(0x34, base | (0x4 << 72)).bandwidth_hz == 6_250
+        # Reserved / unset value -> None (don't invent a bandwidth).
+        assert parse_fdma_tsbk_int(0x34, base).bandwidth_hz is None
 
 
 class TestIdenUpTdma:
