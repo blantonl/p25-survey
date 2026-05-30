@@ -40,6 +40,11 @@ from dataclasses import dataclass
 
 # slots_per_carrier lookup for TDMA channel_type fields.
 # Values 0..5 valid; 6+ reserved. Mirrors tk_p25.py line 919.
+# NB: channel types 0/1/2 map to ONE slot per carrier — i.e. an FDMA channel.
+# IDEN_UP_TDMA (opcode 0x33) can legitimately describe such FDMA channels
+# (WISCOM advertises its all-FDMA VHF/700/800 band plan this way), so the
+# message arriving as 0x33 does NOT by itself mean the channel is TDMA. A
+# channel is only TDMA when it carries 2+ logical slots per carrier.
 _SLOTS_PER_CARRIER = (1, 1, 1, 2, 4, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2)
 
 
@@ -201,13 +206,14 @@ def _parse_fdma_tsbk_int(opcode: int, tsbk: int) -> ParsedTsbk | None:
         if toff_sign == 0:
             toff = -toff
         step_hz = spac * 125
+        slots = _SLOTS_PER_CARRIER[ch_type]
         return IdenUp(
             iden=iden,
             base_freq_hz=freq * 5,
             step_hz=step_hz,
             offset_hz=toff * step_hz,
-            is_tdma=True,
-            slots_per_carrier=_SLOTS_PER_CARRIER[ch_type],
+            is_tdma=slots > 1,  # 1 slot/carrier == FDMA; see _SLOTS_PER_CARRIER
+            slots_per_carrier=slots,
             opcode=opcode,
         )
 
@@ -358,13 +364,14 @@ def parse_tdma_pdu(msg: bytes) -> ParsedTsbk | None:
         ch_spac = ((msg[4] << 8) | msg[5]) & 0x3FF
         base_f = int.from_bytes(msg[6:10], "big")
         step_hz = ch_spac * 125
+        slots = _SLOTS_PER_CARRIER[ch_type]
         return IdenUp(
             iden=iden,
             base_freq_hz=base_f * 5,
             step_hz=step_hz,
             offset_hz=tx_off * step_hz,
-            is_tdma=True,
-            slots_per_carrier=_SLOTS_PER_CARRIER[ch_type],
+            is_tdma=slots > 1,  # 1 slot/carrier == FDMA; see _SLOTS_PER_CARRIER
+            slots_per_carrier=slots,
             opcode=op,
         )
 

@@ -53,7 +53,7 @@ def app_key() -> str:
 @dataclass(frozen=True)
 class RRUser:
     username: str
-    sub_expire_date: str  # ISO date string from RR
+    sub_expire_date: str  # RR's getUserData renders this MM-DD-YYYY (PHP date("m-d-Y"))
 
 
 @dataclass(frozen=True)

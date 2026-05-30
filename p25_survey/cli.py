@@ -321,9 +321,30 @@ def _run_phase1_scan(cfg: "SurveyConfig", sdr, sample_rate: int, n_samples: int,
         )
 
 
-# Match the YYYY-MM-DD prefix; no \b on the trailing edge so values like
-# "2027-01-15T00:00:00Z" (if RR ever returns ISO datetimes) still parse.
+# RR's getUserData renders the expiry with PHP date("m-d-Y", ...), i.e.
+# "MM-DD-YYYY" (e.g. "10-03-2018"). We must parse THAT — an expired account
+# whose date we can't read silently slips through as "unknown" and every RR
+# lookup then fails the premium gate, surfacing as bogus "NEW SYS" rows.
+# Also accept ISO "YYYY-MM-DD" (and "...T..." datetimes) as a fallback in case
+# a call site ever hands us one. The 4-digit year position disambiguates.
 _ISO_DATE_RE = re.compile(r"(\d{4})-(\d{2})-(\d{2})")
+_US_DATE_RE = re.compile(r"(\d{2})-(\d{2})-(\d{4})")
+
+
+def _parse_expire_date(stripped: str) -> date | None:
+    """Parse an RR subExpireDate. Returns None if neither format matches."""
+    m = _ISO_DATE_RE.search(stripped)
+    if m:
+        y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    else:
+        m = _US_DATE_RE.search(stripped)
+        if not m:
+            return None
+        mo, d, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    try:
+        return date(y, mo, d)
+    except ValueError:
+        return None
 
 
 def _subscription_status(expire_str: str, today: date | None = None) -> tuple[str, str]:
@@ -342,12 +363,8 @@ def _subscription_status(expire_str: str, today: date | None = None) -> tuple[st
     # "Never" / "Never - Admin" — lifetime / admin accounts.
     if stripped.lower().startswith("never"):
         return ("lifetime", stripped)
-    m = _ISO_DATE_RE.search(stripped)
-    if not m:
-        return ("unknown", f"could not parse expiry {stripped!r}")
-    try:
-        expire = date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
-    except ValueError:
+    expire = _parse_expire_date(stripped)
+    if expire is None:
         return ("unknown", f"could not parse expiry {stripped!r}")
     if expire < today:
         return ("expired", f"expired {expire.isoformat()}")

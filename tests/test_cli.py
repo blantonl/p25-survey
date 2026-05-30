@@ -54,6 +54,21 @@ class TestSubscriptionStatus:
         status, _ = _subscription_status("2027-01-15T00:00:00Z", today=self.today)
         assert status == "active"
 
+    # RR's getUserData actually renders the expiry with PHP date("m-d-Y", ...),
+    # i.e. MM-DD-YYYY. These are the formats seen in the wild — they MUST parse,
+    # otherwise an expired account slips through as "unknown" and every RR
+    # lookup fails the premium gate, surfacing as bogus "NEW SYS" rows.
+    def test_us_format_expired(self):
+        # Bill's wgbecks account: "10-03-2018" == 2018-10-03, long expired.
+        status, detail = _subscription_status("10-03-2018", today=self.today)
+        assert status == "expired"
+        assert "2018-10-03" in detail
+
+    def test_us_format_active(self):
+        status, detail = _subscription_status("01-15-2027", today=self.today)
+        assert status == "active"
+        assert "2027-01-15" in detail
+
 
 class TestMspsParser:
     def test_integer_msps(self):

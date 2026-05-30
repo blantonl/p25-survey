@@ -351,6 +351,20 @@ class TestIdenUpTdma:
         tsbk = pack_iden_up_tdma(iden=1, ch_type=4, freq_5hz=170_201_250, spac=100, toff_signed=-3600)
         assert parse_fdma_tsbk_int(0x33, tsbk).slots_per_carrier == 4
 
+    def test_one_slot_channel_is_fdma(self):
+        # WISCOM (RR sid 6364) advertises its all-FDMA VHF band plan via
+        # IDEN_UP_TDMA. ch_type 0/1/2 == 1 slot/carrier, which is FDMA — it
+        # must NOT be labelled TDMA just because the carrying opcode is 0x33.
+        # iden 1: base 150.815 MHz, 7.5 kHz spacing (matches RR ch_id_table 157).
+        for ch_type in (0, 1, 2):
+            tsbk = pack_iden_up_tdma(iden=1, ch_type=ch_type,
+                                     freq_5hz=30_163_000, spac=60, toff_signed=0)
+            result = parse_fdma_tsbk_int(0x33, tsbk)
+            assert result.is_tdma is False
+            assert result.slots_per_carrier == 1
+            assert result.step_hz == 7_500
+            assert result.base_freq_hz == 150_815_000
+
     def test_mfg_specific_ignored(self):
         tsbk = pack_iden_up_tdma(iden=1, ch_type=3, freq_5hz=1, spac=1, toff_signed=0)
         # forge a non-zero mfrid
