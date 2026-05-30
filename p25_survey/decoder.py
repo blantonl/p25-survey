@@ -40,8 +40,12 @@ from p25_survey.tsbk import (
     FreqTable,
     IdenUp,
     NetStsBcst,
+    ProtParamBcst,
     RfssStsBcst,
     Sccb,
+    SysSrvBcst,
+    TimeDateAnn,
+    decode_system_services,
     parse_fdma_mbt,
     parse_fdma_tsbk,
     parse_tdma_pdu,
@@ -68,6 +72,11 @@ class _DwellState:
     rfss_id: int | None = None
     site_id: int | None = None
     site_network_active: bool | None = None  # RFSS_STS_BCST A bit
+    site_lra: int | None = None              # Location Registration Area
+    services_available: int | None = None    # SYS_SRV_BCST (raw 24-bit field)
+    services_supported: int | None = None
+    utc_offset_min: int | None = None        # TIME_DATE_ANN
+    encryption_algid: int | None = None      # P_PARM_BCST -> protected CC
     freq_table: FreqTable = field(default_factory=FreqTable)
     neighbors: dict[int, NeighborSite] = field(default_factory=dict)  # keyed by channel_id
     pending_neighbors: list[AdjStsBcst] = field(default_factory=list)
@@ -276,13 +285,25 @@ def _process_msg(msg, state: _DwellState) -> None:
     elif isinstance(parsed, NetStsBcst):
         state.wacn = parsed.wacn
         state.sysid = parsed.sysid
+        if parsed.lra is not None:
+            state.site_lra = parsed.lra
     elif isinstance(parsed, RfssStsBcst):
         state.rfss_id = parsed.rfss_id
         state.site_id = parsed.site_id
         if parsed.network_active is not None:
             state.site_network_active = parsed.network_active
+        if parsed.lra is not None:
+            state.site_lra = parsed.lra
         if state.sysid is None:
             state.sysid = parsed.sysid
+    elif isinstance(parsed, SysSrvBcst):
+        state.services_available = parsed.services_available
+        state.services_supported = parsed.services_supported
+    elif isinstance(parsed, TimeDateAnn):
+        if parsed.utc_offset_min is not None:
+            state.utc_offset_min = parsed.utc_offset_min
+    elif isinstance(parsed, ProtParamBcst):
+        state.encryption_algid = parsed.algid
     elif isinstance(parsed, Sccb):
         # 0xFFFF is a null channel slot — only one secondary advertised.
         for cid in (parsed.cc1_channel_id, parsed.cc2_channel_id):
@@ -357,6 +378,13 @@ def _state_to_record(state: _DwellState, freq_hz: int, dwell_ms: int,
         rfss_id=state.rfss_id,
         site_id=state.site_id,
         site_network_active=state.site_network_active,
+        site_lra=state.site_lra,
+        services_available=(decode_system_services(state.services_available)
+                            if state.services_available is not None else []),
+        services_supported=(decode_system_services(state.services_supported)
+                            if state.services_supported is not None else []),
+        utc_offset_min=state.utc_offset_min,
+        encryption_algid=state.encryption_algid,
         neighbors=sorted(state.neighbors.values(), key=lambda n: n.freq_hz),
         secondary_cc=sorted(state.secondary_cc.values()),
         iden_up=iden_up,

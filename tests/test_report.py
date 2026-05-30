@@ -175,3 +175,27 @@ class TestStatusFlagRendering:
         # No bracketed flag tag for a clean, active, valid trunked neighbor.
         line = [ln for ln in _rendered(rec).splitlines() if "851.10000" in ln][0]
         assert "[" not in line
+
+
+class TestSystemMetadataRendering:
+    def test_encryption_line(self):
+        rec = _full_record()
+        rec.encryption_algid = 0x84
+        text = _rendered(rec)
+        assert "encrypted control channel" in text
+        assert "0x84" in text
+
+    def test_lra_and_services_and_offset(self):
+        rec = _full_record()
+        rec.site_lra = 0x0A
+        rec.services_available = ["group voice", "encryption"]
+        rec.utc_offset_min = -300
+        text = _rendered(rec)
+        assert "LRA:" in text and "0x0A" in text
+        assert "group voice, encryption" in text
+        assert "-05:00" in text
+
+    def test_absent_metadata_renders_nothing(self):
+        text = _rendered(_full_record())
+        for marker in ("Protected CC", "LRA:", "Services:", "UTC offset:"):
+            assert marker not in text

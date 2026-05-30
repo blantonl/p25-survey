@@ -275,6 +275,13 @@ def _write_new_sites(out: StringIO, records: list[SurveyRecord],
         out.write(f"- NAC: {_hex(r.nac, 3)}\n")
         out.write(f"- WACN: {_hex(r.wacn, 5)}\n")
         out.write(f"- SYSID: {_hex(r.sysid, 3)}\n")
+        if r.site_lra is not None:
+            out.write(f"- LRA: 0x{r.site_lra:02X}\n")
+        if r.encryption_algid is not None:
+            out.write(f"- **Encrypted control channel** (P_PARM_BCST, algid "
+                      f"0x{r.encryption_algid:02X})\n")
+        if r.services_available:
+            out.write(f"- System services: {', '.join(r.services_available)}\n")
         if r.signal.rssi_dbfs_mean is not None:
             out.write(f"- Signal: RSSI {r.signal.rssi_dbfs_mean} dBFS\n")
         if r.iden_up:

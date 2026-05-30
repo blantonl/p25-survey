@@ -79,6 +79,7 @@ class RfssStsBcst:
     # A bit (octet 3, bit 4): site has an active network connection to the RFSS
     # controller. False == failsoft / site-trunking. None when not decoded.
     network_active: bool | None = None
+    lra: int | None = None  # Location Registration Area (octet 2)
 
 
 @dataclass(frozen=True)
@@ -86,6 +87,7 @@ class NetStsBcst:
     wacn: int
     sysid: int
     cc_channel_id: int
+    lra: int | None = None  # Location Registration Area (octet 2)
 
 
 @dataclass(frozen=True)
@@ -101,6 +103,35 @@ class AdjStsBcst:
     site_failure: bool | None = None    # F (bit 6): neighbor is in a failure condition
     valid: bool | None = None           # V (bit 5): info current (0 == last-known/stale)
     network_active: bool | None = None  # A (bit 4): neighbor has active RFSS network conn
+    lra: int | None = None              # Location Registration Area (octet 2)
+
+
+@dataclass(frozen=True)
+class SysSrvBcst:
+    """System Service Broadcast (FDMA opcode 0x38). Advertises which trunking
+    services the site currently offers (available) and is equipped for
+    (supported), plus the request-priority threshold. The 24-bit fields are
+    decoded to service-name lists by `decode_system_services`."""
+    services_available: int
+    services_supported: int
+    request_priority: int
+
+
+@dataclass(frozen=True)
+class TimeDateAnn:
+    """Time and Date Announcement (FDMA opcode 0x35). We keep only the UTC
+    offset (minutes, signed) when the message flags it valid — the date/time
+    themselves are transient and not useful for cataloging."""
+    utc_offset_min: int | None = None
+
+
+@dataclass(frozen=True)
+class ProtParamBcst:
+    """Protection Parameter Broadcast (MBT opcode 0x3e). Its mere presence on a
+    control channel means the CC is encrypted/protected; algid names the
+    algorithm. Carried as a 3-block MBT, so we read only algid (header octet 9),
+    which is at a fixed position — not the key id / message indicator."""
+    algid: int
 
 
 @dataclass(frozen=True)
@@ -112,7 +143,35 @@ class Sccb:
     cc2_channel_id: int
 
 
-ParsedTsbk = IdenUp | RfssStsBcst | NetStsBcst | AdjStsBcst | Sccb
+ParsedTsbk = (IdenUp | RfssStsBcst | NetStsBcst | AdjStsBcst | Sccb
+              | SysSrvBcst | TimeDateAnn | ProtParamBcst)
+
+
+# System service bit names, TIA-102.AABC-B Table 6.2.19-1 (Normal services).
+# 24-bit field, b1 (MSB) .. b24 (LSB); service b_n is bit (24 - n). The two
+# flag bits and reserved positions are intentionally left unnamed (None) so
+# they don't show up as "services".
+_SYSTEM_SERVICE_NAMES = (
+    None, None, "network active", None,            # b1-b4
+    "group voice", "individual voice",             # b5-b6
+    "PSTN-unit voice", "unit-PSTN voice",          # b7-b8
+    None, "group data", "individual data", None,   # b9-b12
+    "unit registration", "group affiliation",      # b13-b14
+    "group affiliation query", "authentication",   # b15-b16
+    "encryption", "user status", "user message",   # b17-b19
+    "unit status", "user status query",            # b20-b21
+    "unit status query", "unit page",              # b22-b23
+    "emergency alarm",                             # b24
+)
+
+
+def decode_system_services(value: int) -> list[str]:
+    """Service names whose bit is set in a 24-bit System Service field."""
+    names = []
+    for n, name in enumerate(_SYSTEM_SERVICE_NAMES, start=1):
+        if name is not None and (value >> (24 - n)) & 1:
+            names.append(name)
+    return names
 
 
 # ---------------------------------------------------------------------------
@@ -257,7 +316,26 @@ def _parse_fdma_tsbk_int(opcode: int, tsbk: int) -> ParsedTsbk | None:
         ch2 = (tsbk >> 24) & 0xFFFF
         return Sccb(rfss_id=rfid, site_id=stid, cc1_channel_id=ch1, cc2_channel_id=ch2)
 
+    if opcode == 0x38:  # SYS_SRV_BCST
+        avail = (tsbk >> 48) & 0xFFFFFF  # octets 3-5
+        supp = (tsbk >> 24) & 0xFFFFFF   # octets 6-8
+        prio = (tsbk >> 16) & 0xFF       # octet 9
+        return SysSrvBcst(services_available=avail, services_supported=supp,
+                          request_priority=prio)
+
+    if opcode == 0x35:  # TIME_DATE_ANN
+        # octet 2: VD|VT|VL|res|offset(b11-8); octet 3: offset(b7-0). The
+        # offset is signed minutes (top bit = subtract-from-UTC).
+        vl = (tsbk >> 77) & 1  # octet 2, bit 5 (global bit 72+5 = 77)
+        if not vl:
+            return TimeDateAnn(utc_offset_min=None)
+        raw = (tsbk >> 64) & 0xFFF  # 12-bit Local Time Offset (octet 2 b3-0 + octet 3)
+        minutes = raw & 0x7FF
+        utc_offset = -minutes if (raw >> 11) & 1 else minutes
+        return TimeDateAnn(utc_offset_min=utc_offset)
+
     if opcode == 0x3A:  # RFSS_STS_BCST
+        lra = (tsbk >> 72) & 0xFF
         syid = (tsbk >> 56) & 0xFFF
         rfid = (tsbk >> 48) & 0xFF
         stid = (tsbk >> 40) & 0xFF
@@ -265,22 +343,24 @@ def _parse_fdma_tsbk_int(opcode: int, tsbk: int) -> ParsedTsbk | None:
         # A bit: octet 3 (global bits 64-71), bit 4 -> global bit 68.
         active = bool((tsbk >> 68) & 1)
         return RfssStsBcst(sysid=syid, rfss_id=rfid, site_id=stid,
-                           cc_channel_id=chan, network_active=active)
+                           cc_channel_id=chan, network_active=active, lra=lra)
 
     if opcode == 0x3B:  # NET_STS_BCST
+        lra = (tsbk >> 72) & 0xFF
         wacn = (tsbk >> 52) & 0xFFFFF
         syid = (tsbk >> 40) & 0xFFF
         ch1 = (tsbk >> 24) & 0xFFFF
-        return NetStsBcst(wacn=wacn, sysid=syid, cc_channel_id=ch1)
+        return NetStsBcst(wacn=wacn, sysid=syid, cc_channel_id=ch1, lra=lra)
 
     if opcode == 0x3C:  # ADJ_STS_BCST
+        lra = (tsbk >> 72) & 0xFF
         rfid = (tsbk >> 48) & 0xFF
         stid = (tsbk >> 40) & 0xFF
         ch1 = (tsbk >> 24) & 0xFFFF
         # Octet-3 signaling bits (octet 3 == global bits 64-71): C=bit7 (71),
         # F=bit6 (70), V=bit5 (69), A=bit4 (68).
         return AdjStsBcst(
-            rfss_id=rfid, site_id=stid, channel_id=ch1,
+            rfss_id=rfid, site_id=stid, channel_id=ch1, lra=lra,
             conventional=bool((tsbk >> 71) & 1),
             site_failure=bool((tsbk >> 70) & 1),
             valid=bool((tsbk >> 69) & 1),
@@ -366,6 +446,13 @@ def _parse_fdma_mbt_int(opcode: int, header: int, mbt_data: int) -> ParsedTsbk |
         stid = (mbt_data >> 80) & 0xFF
         ch1 = (mbt_data >> 64) & 0xFFFF
         return RfssStsBcst(sysid=syid, rfss_id=rfid, site_id=stid, cc_channel_id=ch1)
+
+    if opcode == 0x3E:  # P_PARM_BCST (MBT) — protected/encrypted control channel
+        # Algorithm ID is header octet 9. With `header` == raw_header << 16,
+        # raw octet 9 (raw bits 0-7) sits at header bits 16-23. Key id / message
+        # indicator live in the data blocks and aren't decoded here.
+        algid = (header >> 16) & 0xFF
+        return ProtParamBcst(algid=algid)
 
     return None
 

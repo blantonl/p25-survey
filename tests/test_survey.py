@@ -130,6 +130,29 @@ class TestJsonRoundTrip:
         assert rec.site_network_active is None
         assert rec.neighbors[0].network_active is None
 
+    def test_system_metadata_round_trip(self):
+        rec = SurveyRecord(
+            freq_hz=851_000_000,
+            site_lra=0xAB,
+            services_available=["group voice", "encryption"],
+            services_supported=["group voice", "group data"],
+            utc_offset_min=-300,
+            encryption_algid=0x84,
+        )
+        rec2 = SurveyRecord.from_json_dict(rec.to_json_dict())
+        assert rec2.site_lra == 0xAB
+        assert rec2.services_available == ["group voice", "encryption"]
+        assert rec2.services_supported == ["group voice", "group data"]
+        assert rec2.utc_offset_min == -300
+        assert rec2.encryption_algid == 0x84
+
+    def test_system_metadata_absent_defaults(self):
+        rec = SurveyRecord.from_json_dict({"freq_hz": 851_000_000})
+        assert rec.site_lra is None
+        assert rec.services_available == []
+        assert rec.utc_offset_min is None
+        assert rec.encryption_algid is None
+
 
 # ---------------------------------------------------------------------------
 # SurveyWriter

@@ -142,6 +142,18 @@ def render_record(record: SurveyRecord, out: StringIO) -> None:
         gain_str = f"{record.sdr_gain_db} dB" if record.sdr_gain_db is not None else "default"
         out.write(f"  SDR:          {record.sdr_driver}, gain {gain_str}, ppm {record.sdr_ppm}\n")
 
+    if record.encryption_algid is not None:
+        out.write(f"  Protected CC: P_PARM_BCST present — encrypted control channel "
+                  f"(algid 0x{record.encryption_algid:02X})\n")
+    if record.site_lra is not None:
+        out.write(f"  LRA:          0x{record.site_lra:02X}\n")
+    if record.services_available:
+        out.write(f"  Services:     {', '.join(record.services_available)}\n")
+    if record.utc_offset_min is not None:
+        sign = "+" if record.utc_offset_min >= 0 else "-"
+        h, m = divmod(abs(record.utc_offset_min), 60)
+        out.write(f"  UTC offset:   {sign}{h:02d}:{m:02d} (TIME_DATE_ANN)\n")
+
     if record.iden_up:
         out.write(f"  Band plan:    {len(record.iden_up)} entr"
                   f"{'y' if len(record.iden_up) == 1 else 'ies'}\n")

@@ -72,6 +72,13 @@ class SurveyRecord:
     # RFSS_STS_BCST A bit for this site: True == active RFSS network connection,
     # False == failsoft / site-trunking, None == not decoded.
     site_network_active: bool | None = None
+    site_lra: int | None = None  # Location Registration Area (RFSS/NET_STS)
+    # SYS_SRV_BCST: trunking services this site offers / is equipped for,
+    # as decoded service-name lists (see tsbk.decode_system_services).
+    services_available: list[str] = field(default_factory=list)
+    services_supported: list[str] = field(default_factory=list)
+    utc_offset_min: int | None = None    # TIME_DATE_ANN local-time offset
+    encryption_algid: int | None = None  # P_PARM_BCST -> protected control channel
     neighbors: list[NeighborSite] = field(default_factory=list)
     secondary_cc: list[int] = field(default_factory=list)
     iden_up: list[IdenUpEntry] = field(default_factory=list)
@@ -123,6 +130,11 @@ class SurveyRecord:
             rfss_id=d.get("rfss_id"),
             site_id=d.get("site_id"),
             site_network_active=d.get("site_network_active"),
+            site_lra=d.get("site_lra"),
+            services_available=list(d.get("services_available", []) or []),
+            services_supported=list(d.get("services_supported", []) or []),
+            utc_offset_min=d.get("utc_offset_min"),
+            encryption_algid=d.get("encryption_algid"),
             neighbors=neighbors,
             secondary_cc=list(d.get("secondary_cc", []) or []),
             iden_up=iden_up,

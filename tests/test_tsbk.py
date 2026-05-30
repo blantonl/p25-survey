@@ -12,8 +12,12 @@ from p25_survey.tsbk import (
     FreqTable,
     IdenUp,
     NetStsBcst,
+    ProtParamBcst,
     RfssStsBcst,
     Sccb,
+    SysSrvBcst,
+    TimeDateAnn,
+    decode_system_services,
     parse_fdma_mbt,
     parse_fdma_mbt_int,
     parse_fdma_tsbk,
@@ -618,3 +622,72 @@ class TestFullSiteCharacterization:
         n2_freq = ft.channel_id_to_frequency(n2.channel_id)
         assert n1_freq == 851_006_250 + 16 * 6_250
         assert n2_freq == 851_006_250 + 32 * 6_250
+
+
+class TestSystemServiceBcst:
+    def test_fields_and_priority(self):
+        # avail octets 3-5 (>>48), supp octets 6-8 (>>24), prio octet 9 (>>16).
+        tsbk = pack_fdma(0x38, {
+            "avail": (48, 0xABCDEF),
+            "supp": (24, 0x123456),
+            "prio": (16, 0x07),
+        })
+        r = parse_fdma_tsbk_int(0x38, tsbk)
+        assert isinstance(r, SysSrvBcst)
+        assert r.services_available == 0xABCDEF
+        assert r.services_supported == 0x123456
+        assert r.request_priority == 0x07
+
+    def test_decode_service_names(self):
+        # b_n is bit (24 - n). b5=group voice (bit19), b16=authentication (bit8),
+        # b17=encryption (bit7), b24=emergency alarm (bit0).
+        value = (1 << 19) | (1 << 8) | (1 << 7) | (1 << 0)
+        names = decode_system_services(value)
+        assert "group voice" in names
+        assert "authentication" in names
+        assert "encryption" in names
+        assert "emergency alarm" in names
+
+    def test_flag_and_reserved_bits_not_named(self):
+        # b1 (type flag, bit23), b2 (extension, bit22), b4 (reserved, bit20).
+        assert decode_system_services((1 << 23) | (1 << 22) | (1 << 20)) == []
+
+
+class TestTimeDateAnn:
+    def test_valid_positive_offset(self):
+        # VL = octet2 bit5 (global 77). Offset 12-bit at >>64; +300 min.
+        tsbk = pack_fdma(0x35, {"vl": (77, 1), "off": (64, 300)})
+        r = parse_fdma_tsbk_int(0x35, tsbk)
+        assert isinstance(r, TimeDateAnn)
+        assert r.utc_offset_min == 300
+
+    def test_valid_negative_offset(self):
+        # Sign bit (b11 of the 12-bit field, global 75) set -> subtract from UTC.
+        tsbk = pack_fdma(0x35, {"vl": (77, 1), "off": (64, (1 << 11) | 300)})
+        assert parse_fdma_tsbk_int(0x35, tsbk).utc_offset_min == -300
+
+    def test_invalid_offset_is_none(self):
+        tsbk = pack_fdma(0x35, {"off": (64, 300)})  # VL clear
+        assert parse_fdma_tsbk_int(0x35, tsbk).utc_offset_min is None
+
+
+class TestLra:
+    def test_lra_on_rfss_net_adj(self):
+        # LRA is octet 2 (global bits 72-79) on all three broadcasts.
+        r = parse_fdma_tsbk_int(0x3A, pack_rfss_sts(syid=1, rfid=1, stid=7, chan=0x1000)
+                                | (0xAB << 72))
+        assert r.lra == 0xAB
+        n = parse_fdma_tsbk_int(0x3B, pack_net_sts(wacn=0xBEE00, syid=1, ch1=0x1000)
+                                | (0xCD << 72))
+        assert n.lra == 0xCD
+        a = parse_fdma_tsbk_int(0x3C, pack_adj_sts(rfid=1, stid=7, ch1=0x1000)
+                                | (0xEF << 72))
+        assert a.lra == 0xEF
+
+
+class TestProtParamBcst:
+    def test_algid_from_header(self):
+        # MBT: algid is header octet 9; with header == raw << 16 it's at bits 16-23.
+        r = parse_fdma_mbt_int(0x3E, 0x84 << 16, 0)
+        assert isinstance(r, ProtParamBcst)
+        assert r.algid == 0x84
