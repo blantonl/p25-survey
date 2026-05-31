@@ -359,6 +359,71 @@ What we ship today (control section + sync.losses): `tsbk_attempted`, `tsbk_crc_
 
 ---
 
+## 2026-05-31 — parse the full broadcast catalog ourselves, including FDMA MBT (v0.4.0)
+
+**Decision:** Parse the survey-relevant P25 trunking broadcasts from their raw
+bytes in `tsbk.py` rather than relying on what op25 chooses to surface, and
+decode them from FDMA Multi-Block Trunking (MBT) PDUs as well as single-block
+TSBKs.
+
+**What this added:**
+- **FDMA MBT decode** for RFSS_STS_BCST (0x3a), NET_STS_BCST (0x3b),
+  ADJ_STS_BCST (0x3c), and P_PARM_BCST (0x3e). Bit layouts ported from boatbod
+  op25's `decode_mbt_data`. Some VHF/UHF systems advertise neighbors and
+  secondary CCs via MBT instead of TSBK; without this they showed zero
+  neighbors.
+- **Expanded TIA-102.AABC-B catalog** op25 doesn't decode: SYS_SRV_BCST (0x38)
+  services-available/supported bitmaps + request priority (mapped to service
+  names); LRA on RFSS/NET/ADJ_STS; TIME_DATE_ANN (0x35) signed UTC offset only
+  (date/time dropped as transient); P_PARM_BCST (0x3e) → CC encrypted, algid
+  read (key id / message indicator left undecoded).
+- **Site & neighbor status flags** surfaced in the text report and RR
+  submission markdown: RFSS_STS_BCST "A" bit (false ⇒ failsoft site);
+  ADJ_STS_BCST C/F/V/A flags (conventional / failure / stale / network-active);
+  IDEN_UP_VU receiver bandwidth (6.25 / 12.5 kHz) distinct from channel spacing.
+
+**FDMA vs TDMA classification:** A channel is TDMA only with ≥2 slots/carrier
+(`is_tdma = slots_per_carrier > 1`). Channel types 0/1/2 in IDEN_UP_TDMA (0x33)
+describe FDMA channels; systems that advertise an all-FDMA band plan via 0x33
+no longer render as "TDMA x1".
+
+**Why parse it ourselves:** op25 emits only the broadcasts it acts on. The data
+that's valuable for cataloging a system (services, encryption, failsoft state,
+neighbor liveness) is dropped before it reaches the message queue, so we decode
+the raw bytes. The MBT layouts and bit offsets are direct ports — kept in lockstep
+with `tk_p25.py` via header comments so re-vendoring stays mechanical.
+
+**Compatibility:** All new survey-record fields default to None/empty and
+round-trip through the survey JSON; older survey files load unchanged.
+
+---
+
+## 2026-05-31 — accept RR's MM-DD-YYYY premium-expiry format (v0.4.0)
+
+**Decision:** `_parse_expire_date` accepts both ISO `YYYY-MM-DD` and the
+`MM-DD-YYYY` form RadioReference's getUserData actually returns (PHP
+`date("m-d-Y")`).
+
+**Why:** The startup `--rr` guard only matched ISO, so an expired subscription
+parsed as `None` and slipped through. Every premium lookup then AUTH-faulted and
+documented sites got mislabeled "NEW SYS (not in RR)". Expired accounts now hit
+the renew-your-subscription refusal up front. (See also the auto-memory note on
+getUserData returning MM-DD-YYYY.)
+
+---
+
+## 2026-05-31 — `--step` accepts a list of tuning grids (v0.4.0)
+
+**Decision:** `--step` takes a comma-separated list of grids
+(e.g. `5,6.25,7.5,12.5`). One PSD per chunk; each detected peak snaps to
+whichever listed grid lands closest.
+
+**Why:** VHF/UHF bands mix channel spacings, so a single grid misses CCs on the
+other raster. Snapping per-peak against multiple grids catches them all without
+changing Phase 1 capture cost (still one FFT per chunk).
+
+---
+
 ## Open questions / deferred decisions
 
 These will be resolved as implementation forces the issue. Listed here so we don't forget:

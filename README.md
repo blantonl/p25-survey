@@ -7,12 +7,21 @@ auto-tune SDR gain via BER feedback.
 
 For each control channel found, records:
 
-- **Identity**: WACN, System ID, NAC, RFSS ID, Site ID
-- **Channel**: control channel frequency, full IDEN_UP band plan (FDMA + TDMA)
-- **Topology**: neighbor sites with frequencies (resolved through the band plan)
+- **Identity**: WACN, System ID, NAC, RFSS ID, Site ID, LRA (Location Registration Area)
+- **Channel**: control channel frequency, full IDEN_UP band plan (FDMA + TDMA, with
+  VHF/UHF receiver bandwidth). A channel is only flagged TDMA when it carries ≥2
+  slots/carrier, so an all-FDMA band plan advertised via IDEN_UP_TDMA isn't mislabeled.
+- **Topology**: neighbor sites with frequencies (resolved through the band plan), plus
+  per-neighbor status flags (conventional channel, site in failure, stale/last-known,
+  failsoft). Status broadcasts are decoded from both single-block TSBKs and FDMA
+  multi-block trunking (MBT) PDUs, so neighbors are recovered on VHF/UHF systems
+  that advertise them as MBT.
 - **Secondary CCs**: any alternate control channels advertised via SCCB (TSBK opcode 0x39).
   Captured opportunistically — most sites never transmit SCCB, so this is usually empty.
   When present, it lists the site's *currently advertised* secondary CC(s); it is not a rotation schedule.
+- **Site status**: failsoft flag (no active RFSS network connection), control-channel
+  encryption flag (P_PARM_BCST present, with algid), advertised system services
+  (SYS_SRV_BCST), and the system's signed UTC offset (TIME_DATE_ANN).
 - **Signal quality**: RSSI (mean + peak, dBFS), BER, decode rate
 - **RR enrichment** (with `--rr`): system name, site description, frequency offset vs database, neighbor diff
 
@@ -106,9 +115,11 @@ Three phases per scan:
 2. **P25 decode** — for each candidate, run op25's P25 demodulator + frame
    assembler with adaptive dwell. Bail at `--confirm-timeout` (2 s default)
    if no P25 broadcasts arrive. Otherwise dwell up to `--max-dwell` (12 s)
-   while collecting NET_STS_BCST, RFSS_STS_BCST, IDEN_UP*, ADJ_STS_BCST, and
-   SCCB (secondary CC) broadcasts; resolve neighbor and secondary-CC
-   frequencies through the captured band plan.
+   while collecting NET_STS_BCST, RFSS_STS_BCST, IDEN_UP*, ADJ_STS_BCST,
+   SCCB (secondary CC), and the additional TIA-102.AABC-B broadcasts
+   (SYS_SRV_BCST, TIME_DATE_ANN, P_PARM_BCST); resolve neighbor and
+   secondary-CC frequencies through the captured band plan. RFSS/NET/ADJ_STS
+   and P_PARM are decoded from FDMA MBT PDUs as well as single-block TSBKs.
 
 3. **Optional gain sweep** (`--auto-gain`) — sweep 5 gain values × 4 s dwell
    on each confirmed CC, measure BER per gain, recommend the gain that
@@ -123,7 +134,7 @@ Three phases per scan:
 |---|---|
 | `--start MHz` | Start frequency (e.g., `851.0`) |
 | `--stop MHz` | Stop frequency (e.g., `870.0`) |
-| `--step kHz` | Tuning step. Defaults from the band table below; override for special cases. |
+| `--step kHz` | Tuning grid(s). Defaults from the band table below; override for special cases. Accepts a comma-separated list (e.g. `5,6.25,7.5,12.5`) so VHF/UHF scans that mix channel spacings catch every CC — each detected peak snaps to whichever grid is nearest. One PSD per chunk, so capture cost is unchanged. |
 
 ### SDR
 
@@ -148,7 +159,7 @@ Three phases per scan:
 
 | Flag | Description |
 |---|---|
-| `--rr` | Enable RR cross-reference. Prompts for username + password at startup (credentials never stored). Each decoded CC is matched against the RR database; results inline-annotated in the TXT report; non-matching items written to `*-submissions.md`; per-band ppm offsets summarized at end. |
+| `--rr` | Enable RR cross-reference. Prompts for username + password at startup (credentials never stored). The startup guard checks the premium-subscription expiry via getUserData — which renders the date as `MM-DD-YYYY` — and refuses an expired account up front. Each decoded CC is matched against the RR database; results inline-annotated in the TXT report; non-matching items written to `*-submissions.md`; per-band ppm offsets summarized at end. |
 
 ### Auto-gain (BER-driven sweep)
 
@@ -196,7 +207,9 @@ regardless.
 
 ## Tuning step defaults (US)
 
-Auto-selected from the start frequency. Override with `--step <kHz>`.
+Auto-selected from the start frequency. Override with `--step <kHz>`, or pass a
+comma-separated list of grids (e.g. `--step 6.25,7.5,12.5`) to cover a mixed-raster
+band in one pass.
 
 | Band | Range | Default step | Notes |
 |---|---|---|---|

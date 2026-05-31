@@ -6,6 +6,10 @@ each write. A scan that crashes mid-run leaves a valid file.
 `--output` truncates an existing file by default at scan startup; pass
 `--resume` to keep prior records and skip frequencies already present.
 
+All fields default to `null`/empty when the source broadcast wasn't seen,
+and the reader tolerates missing keys, so survey files written by older
+versions load unchanged.
+
 ## Record
 
 | Field | Type | Notes |
@@ -18,6 +22,12 @@ each write. A scan that crashes mid-run leaves a valid file.
 | `nac` | string \| null | 3-hex-char NAC (e.g. `"293"`). |
 | `rfss_id` | int \| null | RFSS ID from RFSS_STS_BCST. |
 | `site_id` | int \| null | Site ID from RFSS_STS_BCST. |
+| `site_network_active` | bool \| null | RFSS_STS_BCST "A" bit. `true` = active RFSS network connection; `false` = failsoft / site-trunking; `null` = not decoded. |
+| `site_lra` | int \| null | Location Registration Area (octet 2 of RFSS_STS / NET_STS_BCST). |
+| `services_available` | array of string | Trunking services this site currently offers, from the SYS_SRV_BCST "available" 24-bit bitmap, decoded to service names. Empty when not seen. |
+| `services_supported` | array of string | Services the site is equipped for, from the SYS_SRV_BCST "supported" bitmap. Empty when not seen. |
+| `utc_offset_min` | int \| null | Signed local-time offset in minutes from TIME_DATE_ANN (date/time themselves are dropped as transient). `null` when not seen or flagged invalid. |
+| `encryption_algid` | int \| null | Encryption algorithm ID from P_PARM_BCST. Its presence means the control channel itself is encrypted/protected. `null` when no P_PARM_BCST seen. |
 | `neighbors` | array | Adjacent sites — see below. |
 | `secondary_cc` | array of int | Resolved frequencies (Hz) advertised in SCCB (TSBK opcode 0x39) as alternate control channels for *this* site. Empty for the vast majority of sites — SCCB is uncommonly broadcast. Useful for re-acquisition on systems that rotate CCs; this is the *currently advertised* secondary, not a rotation schedule. |
 | `iden_up` | array | Channel-identifier (band plan) entries — see below. |
@@ -38,6 +48,10 @@ each write. A scan that crashes mid-run leaves a valid file.
 | `site_id` | int | |
 | `sysid` | string \| null | Only set when source TSBK was TDMA explicit (0xfa-family). |
 | `wacn` | string \| null | Only set when source TSBK was TDMA extended explicit (0xfe). |
+| `conventional` | bool \| null | ADJ_STS_BCST "C" flag — neighbor is a conventional channel. `null` when not decoded (MBT/TDMA paths). |
+| `site_failure` | bool \| null | ADJ_STS_BCST "F" flag — neighbor site is in a failure condition. |
+| `valid` | bool \| null | ADJ_STS_BCST "V" flag — info is current; `false` = stale / last-known. |
+| `network_active` | bool \| null | ADJ_STS_BCST "A" flag — neighbor has an active RFSS network connection; `false` = neighbor failsoft. |
 
 ## `iden_up[]`
 
@@ -47,8 +61,9 @@ each write. A scan that crashes mid-run leaves a valid file.
 | `base_freq_hz` | int | Channel 0 downlink frequency. |
 | `step_hz` | int | Channel-to-channel spacing. |
 | `offset_hz` | int | Signed mobile-uplink offset. |
-| `is_tdma` | bool | |
+| `is_tdma` | bool | `true` only when `slots_per_carrier > 1`. An all-FDMA band plan advertised via IDEN_UP_TDMA stays `false`. |
 | `slots_per_carrier` | int | 1 (FDMA), 2 (Phase 2), or 4. |
+| `bandwidth_hz` | int \| null | Receiver bandwidth from the IDEN_UP_VU "BW VU" field (6250 or 12500 Hz), distinct from channel spacing. `null` for non-VU band plans. |
 
 ## `signal`
 
