@@ -218,6 +218,8 @@ band in one pass.
 | 700 MHz PS narrowband downlink | 769–775 MHz | 6.25 kHz | base TX — **CCs broadcast here** |
 | 700 MHz PS narrowband uplink | 799–805 MHz | 6.25 kHz | mobile TX |
 | 800 MHz PS rebanded | 851–869 MHz | 12.5 kHz | base TX — **CCs broadcast here** |
+| 900 MHz SMR downlink | 935–940 MHz | 12.5 kHz | base TX — **CCs broadcast here** |
+| 900 MHz SMR uplink | 896–901 MHz | 12.5 kHz | mobile TX |
 
 ## Examples by band
 
@@ -229,6 +231,10 @@ band in one pass.
 # 700 MHz PS narrowband downlink (DART, NCTCOG, etc. for DFW area)
 ./p25-survey --start 769 --stop 775 --sdr airspy --gain 14 \
     --threshold 14 --rr --hide-no-cc --output /tmp/survey-700.json
+
+# 900 MHz SMR — business/industrial trunked; sparse in realigned markets
+./p25-survey --start 935 --stop 940 --sdr airspy --gain 14 \
+    --threshold 12 --rr --hide-no-cc --output /tmp/survey-900.json
 
 # VHF land mobile — be generous with threshold; lots of non-P25 noise
 ./p25-survey --start 150 --stop 174 --sdr airspy --gain 14 \

@@ -81,6 +81,7 @@ Reimplementing this in C++ on trunk-recorder would duplicate hundreds of files. 
 | UHF | 380–512 MHz | 12.5 kHz | Standard narrowband |
 | 700 MHz PS | 763–775 / 793–805 MHz | 6.25 kHz | FCC narrowband segment is 1920× 6.25 kHz |
 | 800 MHz | 851–869 MHz | 12.5 kHz | Rebanded raster is 6.25 but deployed P25 CCs sit on 12.5 kHz boundaries |
+| 900 MHz SMR | 935–940 / 896–901 MHz | 12.5 kHz | SMR band plan is 935.0125 + n × 12.5 kHz — not a 6.25 raster |
 | (any other) | — | 12.5 kHz | Conservative default |
 
 The step is used to:

@@ -38,6 +38,20 @@ US_BANDS: tuple[Band, ...] = (
         notes="6.25 kHz raster but P25 CCs sit on 12.5 kHz boundaries",
     ),
     Band(
+        name="900 MHz SMR downlink (base TX, mobile RX)",
+        low_hz=935_000_000,
+        high_hz=940_000_000,
+        default_step_hz=12_500,
+        notes="SMR raster is 935.0125 + n*12.5 kHz. P25/NXDN/DMR trunked systems here. "
+        "In realigned markets 936.5-939.5 is broadband (LTE) and will be empty.",
+    ),
+    Band(
+        name="900 MHz SMR uplink (mobile TX, base RX)",
+        low_hz=896_000_000,
+        high_hz=901_000_000,
+        default_step_hz=12_500,
+    ),
+    Band(
         name="UHF land mobile",
         low_hz=380_000_000,
         high_hz=512_000_000,
