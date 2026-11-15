@@ -172,7 +172,43 @@ pub fn scan(args: &[String]) -> Result<(), String> {
     }
     let out_path = crate::opt(rest, "--output").map(std::path::PathBuf::from);
     // Log in before scanning, so a wrong password doesn't cost a scan.
-    let rr = if rest.iter().any(|a| a == "--rr") { Some(crate::rr_login()?) } else { None };
+    let rr = if rest.iter().any(|a| a == "--rr") { Some(crate::rr_login(rest)?) } else { None };
+    // RR is looked up on a thread of its own: the radio doesn't wait for HTTP.
+    let (rr_tx, rr_worker) = match rr {
+        Some(client) => {
+            // A hop's rows at a time (with their index in `rows`), so a
+            // weak channel can borrow its WACN from the hop's others; one
+            // that still can't waits for the whole survey.
+            let (tx, rx) = std::sync::mpsc::channel::<Vec<(usize, Row)>>();
+            let worker = std::thread::spawn(move || {
+                let mut seen: Vec<Row> = Vec::new();
+                let mut done = Vec::new();
+                let mut later = Vec::new();
+                let look = |i: usize, row: &Row, seen: &[Row], done: &mut Vec<(usize, crate::enrich::Enrichment)>| {
+                    let e = crate::enrich::enrich_in(row, seen, &client);
+                    println!("    {}  {}", crate::rows::mhz(row.freq_hz), rr_summary(&e));
+                    done.push((i, e));
+                };
+                for batch in rx {
+                    seen.extend(batch.iter().map(|(_, r)| r.clone()));
+                    for (i, row) in batch.into_iter().filter(|(_, r)| r.is_control()) {
+                        let borrowable = row.wacn.is_some() || seen.iter().any(|o| o.sysid == row.sysid && o.wacn.is_some());
+                        if borrowable || row.sysid.is_none() {
+                            look(i, &row, &seen, &mut done);
+                        } else {
+                            later.push((i, row));
+                        }
+                    }
+                }
+                for (i, row) in later {
+                    look(i, &row, &seen, &mut done);
+                }
+                done
+            });
+            (Some(tx), Some(worker))
+        }
+        None => (None, None),
+    };
     let mut out_file = match &out_path {
         Some(p) => Some(BufWriter::new(File::create(p).map_err(|e| format!("{}: {e}", p.display()))?)),
         None => None,
@@ -236,7 +272,7 @@ pub fn scan(args: &[String]) -> Result<(), String> {
                         &hops,
                         hide,
                         (source.name(), gain_number(&source, user_gain)),
-                        rr.as_ref(),
+                        rr_tx.as_ref(),
                         &mut rows,
                         out_file.as_mut(),
                     )?;
@@ -251,19 +287,33 @@ pub fn scan(args: &[String]) -> Result<(), String> {
                         &hops,
                         hide,
                         (source.name(), gain_number(&source, user_gain)),
-                        rr.as_ref(),
+                        rr_tx.as_ref(),
                         &mut rows,
                         out_file.as_mut(),
                     )?;
                     print_sweep(&sw);
                     sweeps.push(*sw);
                 }
-                Output::Done => {
-                    flush(&mut records, &mut written, &hops, hide, (source.name(), gain_number(&source, user_gain)), rr.as_ref(), &mut rows, out_file.as_mut())?
-                }
+                Output::Done => flush(
+                    &mut records,
+                    &mut written,
+                    &hops,
+                    hide,
+                    (source.name(), gain_number(&source, user_gain)),
+                    rr_tx.as_ref(),
+                    &mut rows,
+                    out_file.as_mut(),
+                )?,
             }
         }
     }
+    // The survey is over: let the radio go, and count what it lost while
+    // the survey ran (not while RR answers come in).
+    let lost = match &source {
+        Source::Radio(r) => r.dropped(),
+        Source::Recordings { .. } => 0,
+    };
+    drop(source);
     let ccs: Vec<&Record> = records.iter().filter(|r| r.is_control()).collect();
     let copies = ccs.iter().filter(|r| r.copy_of.is_some()).count();
     println!(
@@ -277,20 +327,28 @@ pub fn scan(args: &[String]) -> Result<(), String> {
         air as f64 / rate,
         t0.elapsed().as_secs_f64()
     );
+    if lost > 0 {
+        println!("{lost} samples lost ({:.2} % of the air): the computer didn't keep up.", 100.0 * lost as f64 / (air + lost) as f64);
+    }
     if !sweeps.is_empty() {
         print_bands(&sweeps);
     }
     if let Some(c) = crate::report::clock(&rows) {
         println!("Radio clock: {:+.2} ppm ({} control channels, consistency {})", c.median_ppm, c.n, c.consistency);
     }
+    if let Some(worker) = rr_worker {
+        drop(rr_tx);
+        println!("Waiting for the RadioReference lookups...");
+        for (i, e) in worker.join().map_err(|_| "the RadioReference lookups failed")? {
+            rows[i].rr = Some(e);
+        }
+        if let Some(p) = &out_path {
+            drop(out_file.take());
+            crate::rows::write(p, &rows)?;
+        }
+    }
     if let Some(p) = &out_path {
         crate::write_reports(p, &rows)?;
-    }
-    if let Source::Radio(r) = &source {
-        let lost = r.dropped();
-        if lost > 0 {
-            println!("{lost} samples lost ({:.2} % of the air): the computer didn't keep up.", 100.0 * lost as f64 / (air + lost) as f64);
-        }
     }
     Ok(())
 }
@@ -372,8 +430,9 @@ pub fn radios() -> Result<(), String> {
     Ok(())
 }
 
-/// Mark copies over every record so far, then print the new ones, look them
-/// up in RR, and write them.
+/// Mark copies over every record so far, then print the new ones, write
+/// them, and hand them to the RR lookups (written again with RR's answers
+/// at the end).
 #[allow(clippy::too_many_arguments)]
 fn flush(
     records: &mut [Record],
@@ -381,7 +440,7 @@ fn flush(
     hops: &[f64],
     hide: bool,
     (driver, gain_db): (&str, Option<f64>),
-    rr: Option<&crate::rr::Client>,
+    rr: Option<&std::sync::mpsc::Sender<Vec<(usize, Row)>>>,
     rows: &mut Vec<Row>,
     file: Option<&mut BufWriter<File>>,
 ) -> Result<(), String> {
@@ -394,14 +453,9 @@ fn flush(
             println!("{}", row(r));
         }
     }
-    let mut new_rows: Vec<Row> =
-        new.iter().map(|r| serde_json::from_value(to_json(r, driver, gain_db)).map_err(|e| e.to_string())).collect::<Result<_, _>>()?;
-    if let Some(client) = rr {
-        for row in new_rows.iter_mut().filter(|r| r.is_control()) {
-            let e = crate::enrich::enrich(row, client);
-            println!("    {}  {}", crate::rows::mhz(row.freq_hz), rr_summary(&e));
-            row.rr = Some(e);
-        }
+    let new_rows: Vec<Row> = new.iter().map(|r| serde_json::from_value(to_json(r, driver, gain_db)).map_err(|e| e.to_string())).collect::<Result<_, _>>()?;
+    if let Some(tx) = rr {
+        let _ = tx.send(new_rows.iter().cloned().enumerate().map(|(k, r)| (rows.len() + k, r)).collect());
     }
     if let Some(f) = file {
         for r in &new_rows {

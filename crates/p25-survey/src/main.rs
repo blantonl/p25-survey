@@ -26,8 +26,9 @@ const USAGE: &str = "usage:
   p25-survey scan <recording>... [--start MHz] [--stop MHz] [scan options]
       scan options: [--threshold dB] [--max-dwell S] [--output survey.json] [--hide-no-cc]
                     [--auto-gain [--gain-sweep 6,9,12,15,18]]  (a radio only)
-                    [--rr]  (look each control channel up in RadioReference)
-  p25-survey report <survey.json> [--rr]   (the reports again; --rr: look it up now)
+                    [--rr [--rr-stdin]]  (look each control channel up in RadioReference;
+                    --rr-stdin: username and password on standard input, not asked)
+  p25-survey report <survey.json> [--rr [--rr-stdin]]   (the reports again; --rr: look it up now)
   p25-survey radios
 (a recording is a SigMF .sigmf-meta / .sigmf-data, or its name without either)";
 
@@ -89,19 +90,27 @@ fn info(path: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Log in to RadioReference: asked for every time, never stored.
-pub(crate) fn rr_login() -> Result<rr::Client, String> {
-    use std::io::Write;
-    println!("RadioReference login (not stored)");
-    print!("  Username: ");
-    std::io::stdout().flush().map_err(|e| e.to_string())?;
-    let mut user = String::new();
-    std::io::stdin().read_line(&mut user).map_err(|e| e.to_string())?;
-    let password = rpassword::prompt_password("  Password: ").map_err(|e| e.to_string())?;
-    let client = rr::Client::new(user.trim(), &password, Box::new(rr::Https::new())).map_err(|e| e.to_string())?;
+/// Log in to RadioReference: asked for every time, never stored. With
+/// `--rr-stdin` the username and password are the first two lines of
+/// standard input instead (for scripts: nothing on the command line).
+pub(crate) fn rr_login(rest: &[String]) -> Result<rr::Client, String> {
+    use std::io::{BufRead, Write};
+    let (user, password) = if rest.iter().any(|a| a == "--rr-stdin") {
+        let mut lines = std::io::stdin().lock().lines();
+        let mut next = || lines.next().transpose().map_err(|e| e.to_string()).map(Option::unwrap_or_default);
+        (next()?, next()?)
+    } else {
+        println!("RadioReference login (not stored)");
+        print!("  Username: ");
+        std::io::stdout().flush().map_err(|e| e.to_string())?;
+        let mut user = String::new();
+        std::io::stdin().read_line(&mut user).map_err(|e| e.to_string())?;
+        (user, rpassword::prompt_password("  Password: ").map_err(|e| e.to_string())?)
+    };
+    let client = rr::Client::new(user.trim(), password.trim_end_matches(['\r', '\n']), Box::new(rr::Https::new())).map_err(|e| e.to_string())?;
     match client.user() {
         Ok(u) => {
-            println!("  Logged in as {} (subscription expires {})", u.username, u.sub_expire_date);
+            println!("RadioReference: logged in as {} (subscription expires {})", u.username, u.sub_expire_date);
             Ok(client)
         }
         Err(e) if e.auth => Err(format!("RadioReference refused the login: {e}")),
@@ -132,10 +141,11 @@ fn report_cmd(path: &str, rest: &[String]) -> Result<(), String> {
     let path = std::path::Path::new(path);
     let mut rows = rows::read(path)?;
     if rest.iter().any(|a| a == "--rr") {
-        let client = rr_login()?;
+        let client = rr_login(rest)?;
         let mut n = 0;
+        let all = rows.clone();
         for r in rows.iter_mut().filter(|r| r.is_control()) {
-            r.rr = Some(enrich::enrich(r, &client));
+            r.rr = Some(enrich::enrich_in(r, &all, &client));
             n += 1;
         }
         rows::write(path, &rows)?;

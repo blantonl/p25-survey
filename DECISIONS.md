@@ -244,6 +244,27 @@ RR: base stations are GPS-disciplined, and RR's frequencies are on the
 raster, so the Python version's offsets against RR were nearly always 0. Live
 (Airspy Mini): +0.81 ppm, IQR 0.21, over 21 control channels on two bands.
 
+## 2026-11-15 — RR lookups beside the scan, not in it
+
+The RR API takes a second or two a call; done between hops, the radio's
+queue overflowed and half the air was lost. The lookups run on a thread of
+their own, a hop's records at a time; the scan never waits, and at the end
+the records are written again with RR's answers before the reports.
+
+A weak control channel without a decoded WACN borrows it for the lookup from
+the survey's other control channels with the same System ID, when they agree
+on one (noted in `rr.notes`; the record keeps what was decoded). Live, that
+put NTIRN's Mansfield (1-5) and Texas Motor Speedway (1-6) sites on the map.
+One still unresolved when its hop ends waits for the whole survey.
+
+`--rr-stdin` takes the username and password from standard input instead of
+asking (scripts); nothing is stored either way.
+
+Live, 851-869 MHz with --rr (2026-11-15): 19 control channels, every one
+matched to its RR site and every frequency listed; to submit: NTIRN Grand
+Prairie (1-7) sends NAC 440 where RR has 447, and CTTRS Dallas announces a
+neighbour (1-99, 464.55 MHz) RR's roster doesn't have.
+
 ## 2026-11-15 — License
 
 GPL-3.0-or-later, as the Python version. That was required there by op25;

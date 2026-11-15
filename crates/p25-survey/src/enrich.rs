@@ -168,6 +168,25 @@ pub fn enrich(r: &Row, rr: &Client) -> Enrichment {
     e
 }
 
+/// Look a record up, in the light of the rest of the survey: a control
+/// channel whose WACN wasn't decoded (a weak one) borrows it from the others
+/// with the same System ID, if they agree on one. The record is unchanged;
+/// the lookup says so in a note.
+pub fn enrich_in(r: &Row, survey: &[Row], rr: &Client) -> Enrichment {
+    if r.wacn.is_some() || r.sysid.is_none() {
+        return enrich(r, rr);
+    }
+    let mut wacns: Vec<&String> = survey.iter().filter(|o| o.sysid == r.sysid).filter_map(|o| o.wacn.as_ref()).collect();
+    wacns.sort();
+    wacns.dedup();
+    let [wacn] = wacns[..] else { return enrich(r, rr) };
+    let mut with = r.clone();
+    with.wacn = Some(wacn.clone());
+    let mut e = enrich(&with, rr);
+    e.notes.insert(0, format!("WACN not decoded here; {wacn} taken from the survey's other control channels with SYSID {}", r.sysid.as_deref().unwrap_or("")));
+    e
+}
+
 /// The RR site with this RFSS and site number. Several (subsystems sharing
 /// numbers) are told apart by NAC; (None, true) if they can't be.
 pub fn find_site<'a>(sites: &'a [Site], rfss: u32, site: u32, nac: Option<&str>) -> (Option<&'a Site>, bool) {
@@ -340,6 +359,17 @@ mod tests {
         let e = enrich(&row(858_537_500, 1, 1), &rr());
         assert!(e.site_match && !e.cc_freq_in_db);
         assert_eq!(e.cc_freq_offset.unwrap().offset_hz, 100_000);
+    }
+
+    #[test]
+    fn a_missing_wacn_from_the_rest_of_the_survey() {
+        let mut weak = row(859_712_500, 1, 1);
+        weak.wacn = None;
+        let others = vec![row(858_437_500, 1, 2), weak.clone()];
+        assert!(!enrich(&weak, &rr()).system_match);
+        let e = enrich_in(&weak, &others, &rr());
+        assert!(e.system_match && e.site_match, "{e:?}");
+        assert!(e.notes[0].contains("BEE00"));
     }
 
     #[test]

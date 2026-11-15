@@ -114,7 +114,7 @@ impl Site {
 }
 
 /// Sends a SOAP envelope for an operation, returns the response body.
-pub trait Transport {
+pub trait Transport: Send {
     fn post(&self, op: &str, envelope: &str) -> Result<String, RrError>;
 }
 
