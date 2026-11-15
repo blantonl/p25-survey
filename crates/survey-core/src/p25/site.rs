@@ -70,6 +70,11 @@ impl SiteInfo {
         changed
     }
 
+    /// Each NAC heard, with how many frames had it.
+    pub fn nac_votes(&self) -> impl Iterator<Item = (u16, u32)> + '_ {
+        self.nac_votes.iter().map(|(&n, &v)| (n, v))
+    }
+
     /// WACN, system, RFSS and site all heard.
     pub fn has_identity(&self) -> bool {
         self.wacn.is_some() && self.sysid.is_some() && self.rfss.is_some() && self.site.is_some()

@@ -57,8 +57,9 @@ impl Stats {
 pub enum Event {
     /// A frame: where its sync starts (channel sample index) and its NID.
     Frame { at: u64, nid: Nid },
-    /// A TSBK that passed its CRC: its message octets.
-    Tsbk { at: u64, nac: u16, octets: [u8; TSBK_LEN] },
+    /// A TSBK that passed its CRC: its frame's sync, which block of the
+    /// frame it is (0..3), and its message octets.
+    Tsbk { at: u64, block: u8, nac: u16, octets: [u8; TSBK_LEN] },
 }
 
 pub struct Framer {
@@ -158,6 +159,13 @@ impl Framer {
         let mut rd = Reader { buf: &self.buf, j, sps: self.sps, centre, outer, symbol: SYNC_SYMBOLS };
         let nid_bits = (0..NID_DIBITS).fold(0u64, |a, _| a << 2 | rd.next() as u64);
         let nid = nid::decode(nid_bits, self.nac)?;
+        // The all-ones and all-zeros codewords (NAC FFF / DUID F, NAC 000 /
+        // DUID 0) are what a flat stretch of -3 or +1 symbols after a false
+        // sync decodes to. No transmitter sends them: NAC FFF is a receiver
+        // setting ("any NAC"), and 000 isn't used.
+        if (nid.nac, nid.duid) == (0xfff, 0xf) || (nid.nac, nid.duid) == (0x000, 0x0) {
+            return None;
+        }
         self.nac = Some(nid.nac);
         self.stats.frames[nid.duid as usize] += 1;
         self.stats.nid_errors += nid.errors;
@@ -169,13 +177,13 @@ impl Framer {
         }
         let mut tsbks = Vec::new();
         let mut bad = 0;
-        for _ in 0..MAX_BLOCKS {
+        for b in 0..MAX_BLOCKS as u8 {
             let block: [u8; BLOCK_DIBITS] = std::array::from_fn(|_| rd.next());
             let (octets, errors) = decode_half_rate(&deinterleave(&block));
             self.stats.trellis_errors += errors;
             if tsbk_ok(&octets) {
                 let msg: [u8; TSBK_LEN] = octets[..TSBK_LEN].try_into().unwrap();
-                tsbks.push(msg);
+                tsbks.push((b, msg));
                 if msg[0] & 0x80 != 0 {
                     break;
                 }
@@ -186,7 +194,7 @@ impl Framer {
         let end = rd.symbol;
         self.stats.tsbk_ok += tsbks.len() as u32;
         self.stats.tsbk_bad += bad;
-        out.extend(tsbks.into_iter().map(|octets| Event::Tsbk { at, nac: nid.nac, octets }));
+        out.extend(tsbks.into_iter().map(|(block, octets)| Event::Tsbk { at, block, nac: nid.nac, octets }));
         // The next frame follows at once: look again from a symbol before.
         Some(j + self.at(end.saturating_sub(1)))
     }
@@ -295,6 +303,17 @@ mod tests {
         let mut ev = Vec::new();
         f.push(&x, &mut ev);
         assert_eq!(f.stats.tsbk_ok, 1);
+    }
+
+    #[test]
+    fn a_flat_signal_after_a_sync_is_not_a_frame() {
+        // The sync, then -3 for ever: all -3 would decode as NAC FFF.
+        let mut symbols: Vec<f32> = (0..SYNC_SYMBOLS).map(sync_sign).collect();
+        symbols.extend(std::iter::repeat_n(-1.0, 400));
+        let mut f = Framer::new(10.0);
+        let mut ev = Vec::new();
+        f.push(&samples(&symbols, 1800.0, 0.0), &mut ev);
+        assert_eq!(f.stats.frames_total(), 0);
     }
 
     #[test]

@@ -5,10 +5,9 @@
 use std::process::ExitCode;
 use std::time::Instant;
 
-use survey_core::dsp::{Channel, Discriminator};
-use survey_core::p25::framer::{Event, Framer};
+use survey_core::dsp::Channel;
 use survey_core::p25::nid::duid;
-use survey_core::p25::{SiteInfo, parse_tsbk};
+use survey_core::p25::receiver::{ControlChannel, KINDS, Kind};
 use survey_radio::sigmf::Recording;
 
 const USAGE: &str = "usage:
@@ -74,15 +73,12 @@ fn info(path: &str) -> Result<(), String> {
 struct Rx {
     freq_hz: f64,
     channel: Channel,
-    disc: Discriminator,
-    framer: Framer,
-    site: SiteInfo,
+    cc: ControlChannel,
     iq: Vec<num_complex::Complex32>,
-    hz: Vec<f32>,
-    events: Vec<Event>,
+    tsbks: Vec<survey_core::p25::receiver::Tsbk>,
 }
 
-/// Decode the control channels at `--freq` from a recording: C4FM.
+/// Decode the control channels at `--freq` from a recording, with both receivers.
 fn decode(path: &str, rest: &[String]) -> Result<(), String> {
     let r = Recording::open(path).map_err(|e| e.to_string())?;
     let freqs: Vec<f64> = opt(rest, "--freq")
@@ -95,17 +91,7 @@ fn decode(path: &str, rest: &[String]) -> Result<(), String> {
         .iter()
         .map(|&f| {
             let channel = Channel::new(r.rate_hz, f - r.center_hz)?;
-            let sps = channel.samples_per_symbol();
-            Ok(Rx {
-                freq_hz: f,
-                disc: Discriminator::new(channel.output_rate(), sps.round() as usize),
-                framer: Framer::new(sps),
-                channel,
-                site: SiteInfo::default(),
-                iq: Vec::new(),
-                hz: Vec::new(),
-                events: Vec::new(),
-            })
+            Ok(Rx { freq_hz: f, cc: ControlChannel::new(channel.output_rate(), channel.samples_per_symbol()), channel, iq: Vec::new(), tsbks: Vec::new() })
         })
         .collect::<Result<Vec<_>, String>>()?;
     let t0 = Instant::now();
@@ -118,22 +104,8 @@ fn decode(path: &str, rest: &[String]) -> Result<(), String> {
         for rx in &mut rxs {
             rx.iq.clear();
             rx.channel.process(&block, &mut rx.iq);
-            rx.hz.clear();
-            rx.disc.process(&rx.iq, &mut rx.hz);
-            rx.events.clear();
-            rx.framer.push(&rx.hz, &mut rx.events);
-            for e in &rx.events {
-                match *e {
-                    Event::Frame { nid, .. } => {
-                        rx.site.nac_heard(nid.nac);
-                    }
-                    Event::Tsbk { octets, .. } => {
-                        if let Some(b) = parse_tsbk(&octets) {
-                            rx.site.push(b);
-                        }
-                    }
-                }
-            }
+            rx.tsbks.clear();
+            rx.cc.push(&rx.iq, &mut rx.tsbks);
         }
     }
     let air = done as f64 / r.rate_hz;
@@ -152,16 +124,18 @@ fn decode(path: &str, rest: &[String]) -> Result<(), String> {
 
 /// One line per channel, for comparing runs (corpus/compare.py).
 fn json(rx: &Rx, air_s: f64) -> serde_json::Value {
-    let s = &rx.framer.stats;
-    let site = &rx.site;
+    let site = &rx.cc.site;
+    let per = |k: Kind| {
+        let s = rx.cc.stats(k);
+        serde_json::json!({"syncs": s.syncs, "frames": s.frames_total(), "tsbk_ok": s.tsbk_ok, "tsbk_bad": s.tsbk_bad, "first": rx.cc.first[k as usize]})
+    };
     serde_json::json!({
         "freq_hz": rx.freq_hz as u64,
         "air_s": air_s,
-        "syncs": s.syncs,
-        "frames": s.frames_total(),
-        "tsdu": s.frames[duid::TSDU as usize],
-        "tsbk_ok": s.tsbk_ok,
-        "tsbk_bad": s.tsbk_bad,
+        "tsbks": rx.cc.tsbks,
+        "c4fm": per(Kind::C4fm),
+        "cqpsk": per(Kind::Cqpsk),
+        "offset_hz": rx.cc.offset_hz(),
         "broadcasts": site.broadcasts,
         "nac": site.nac.map(|v| format!("{v:03X}")),
         "wacn": site.wacn.map(|v| format!("{v:05X}")),
@@ -176,27 +150,27 @@ fn json(rx: &Rx, air_s: f64) -> serde_json::Value {
 }
 
 fn report(rx: &Rx) {
-    let s = &rx.framer.stats;
-    let site = &rx.site;
-    let total = s.tsbk_ok + s.tsbk_bad;
-    println!("\n{:.5} MHz", rx.freq_hz / 1e6);
-    println!(
-        "  syncs {}  frames {} (TSDU {}, voice {}, other {})  NID errors/frame {:.2}",
-        s.syncs,
-        s.frames_total(),
-        s.frames[duid::TSDU as usize],
-        s.frames[duid::LDU1 as usize] + s.frames[duid::LDU2 as usize] + s.frames[duid::HDU as usize],
-        s.frames_total() - s.frames[duid::TSDU as usize] - s.frames[duid::LDU1 as usize] - s.frames[duid::LDU2 as usize] - s.frames[duid::HDU as usize],
-        s.nid_errors as f64 / s.frames_total().max(1) as f64
-    );
-    println!(
-        "  TSBKs {} of {} passed CRC ({:.1} %), trellis errors/block {:.1}, site broadcasts {}",
-        s.tsbk_ok,
-        total,
-        100.0 * s.tsbk_ok as f64 / total.max(1) as f64,
-        s.trellis_errors as f64 / total.max(1) as f64,
-        site.broadcasts
-    );
+    let site = &rx.cc.site;
+    println!("\n{:.5} MHz  (carrier {:+.0} Hz)", rx.freq_hz / 1e6, rx.cc.offset_hz());
+    for k in KINDS {
+        let s = rx.cc.stats(k);
+        let total = s.tsbk_ok + s.tsbk_bad;
+        println!(
+            "  {:<5}  frames {:>5} (TSDU {:>5})  NID errors/frame {:.2}  TSBKs {:>5} of {:>5} ({:5.1} %), first {:>5}, trellis errors/block {:.1}",
+            format!("{k:?}"),
+            s.frames_total(),
+            s.frames[duid::TSDU as usize],
+            s.nid_errors as f64 / s.frames_total().max(1) as f64,
+            s.tsbk_ok,
+            total,
+            100.0 * s.tsbk_ok as f64 / total.max(1) as f64,
+            rx.cc.first[k as usize],
+            s.trellis_errors as f64 / total.max(1) as f64,
+        );
+    }
+    println!("  TSBKs {}, site broadcasts {}", rx.cc.tsbks, site.broadcasts);
+    let votes: Vec<String> = site.nac_votes().map(|(n, v)| format!("{n:03X} x{v}")).collect();
+    println!("  NACs heard: {}", votes.join(", "));
     let hex = |v: Option<u32>, w: usize| v.map_or("-".to_string(), |v| format!("{v:0w$X}"));
     println!(
         "  NAC {}  WACN {}  system {}  RFSS {}  site {}",

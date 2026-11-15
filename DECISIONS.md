@@ -92,10 +92,32 @@ the clean channels; more than op25's better chain on the C4FM sites (853.7875
 op25 never identified (771.73125, 771.98125). Simulcast channels need the
 CQPSK receiver (Metrocrest 854.7875: 91 vs 428).
 
-## 2026-11-15 — The NAC is the one heard most
+## 2026-11-15 — CQPSK receiver, and both receivers on every channel
 
-One NID in a noisy stretch can decode to another NAC (Metrocrest read as FFF
-until this): a site's NAC is the majority of its frames'.
+The CQPSK receiver tracks the carrier (a slow loop on the instantaneous
+frequency), applies an RRC matched filter (α 0.2) and takes the phase step
+across one symbol: ±45° / ±135°, scaled to Hz so it reads like the C4FM
+receiver's averaged discriminator and the same framer takes it. Without the
+tracking a radio 600 Hz off wraps ±135° past ±180°; the Airspy in the corpus
+is about +800 Hz off at 855 MHz.
+
+Every channel runs both receivers, each with its own framer; a TSBK either
+decodes is taken once (same frame time within 15 symbols, same block). On
+the corpus that is 115 % of op25's better chain's site broadcasts: far ahead
+on weak and C4FM sites (858.5375 1105 vs 553, 859.2125 994 vs 369, 854.5125
+384 vs 36), every site op25 identified identified the same, and four more.
+op25's CQPSK is still a little ahead on the strongest simulcast channels
+(Metrocrest 854.7875 392 vs 428, 857.8375 128 vs 191): an equaliser or soft
+decisions are what's left there.
+
+## 2026-11-15 — The NAC is the one heard most; two NIDs are never real
+
+One NID in a noisy stretch can decode to another NAC: a site's NAC is the
+majority of its frames'. And a false sync followed by a flat stretch of -3 or
++1 symbols decodes as a perfect NID: NAC FFF / DUID F (all ones) or NAC 000 /
+DUID 0 (all zeros). On 852.375 that was 176 frames against 160 real ones.
+No transmitter sends either (FFF is a receiver's "any NAC"), so both are
+rejected.
 
 ## 2026-11-15 — License
 

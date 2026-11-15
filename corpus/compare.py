@@ -58,11 +58,11 @@ def main():
             n = {c: chains[c]["broadcasts"] if c in chains else 0 for c in ("cqpsk", "fsk4")}
             pct = {c: (chains[c].get("signal") or {}).get("decode_rate_pct") or 0 if c in chains else 0 for c in ("cqpsk", "fsk4")}
             best = max(n, key=n.get)
-            att = o["tsbk_ok"] + o["tsbk_bad"]
+            att = max(o["c4fm"]["tsbk_ok"] + o["c4fm"]["tsbk_bad"], o["cqpsk"]["tsbk_ok"] + o["cqpsk"]["tsbk_bad"])
             same = site(o) == site(chains[best]) and o["idens"] == len(chains[best]["iden_up"])
             tot_ours += o["broadcasts"]
             tot_best += n[best]
-            print(f"  {f / 1e6:>10.5f}   {o['broadcasts']:>5} {100 * o['tsbk_ok'] / max(att, 1):>5.1f}   {n['cqpsk']:>5} {pct['cqpsk']:>5.1f}   {n['fsk4']:>5} {pct['fsk4']:>5.1f}   "
+            print(f"  {f / 1e6:>10.5f}   {o['broadcasts']:>5} {100 * o['tsbks'] / max(att, 1):>5.1f}   {n['cqpsk']:>5} {pct['cqpsk']:>5.1f}   {n['fsk4']:>5} {pct['fsk4']:>5.1f}   "
                   f"{'same' if same else 'differs'} {'/'.join(str(x) for x in site(o))}")
     print(f"\nsite broadcasts: ours {tot_ours}, op25's better chain {tot_best} ({100 * tot_ours / max(tot_best, 1):.1f} %)")
 
