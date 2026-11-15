@@ -10,7 +10,7 @@ use super::filter::{Decimator, lowpass, taps_for};
 pub const SYMBOL_RATE: f64 = 4800.0;
 /// One-sided bandwidth kept: a 12.5 kHz channel, plus room for the radio's
 /// frequency error.
-const PASS_HZ: f64 = 7250.0;
+pub(crate) const PASS_HZ: f64 = 7250.0;
 /// The last filter's transition, Hz (the adjacent 12.5 kHz channel starts at
 /// 6.25 kHz from its centre, so its energy is mostly past 9.5 kHz from ours).
 const CHANNEL_TRANSITION_HZ: f64 = 2500.0;
@@ -38,19 +38,30 @@ fn stages(mut total: usize) -> Option<Vec<usize>> {
     (total == 1).then_some(f)
 }
 
+/// The channel rate for wideband samples at `rate_hz`: 4800 × (10 down to
+/// 5) samples a second, the first that divides it; and the decimation.
+pub(crate) fn decimation(rate_hz: f64) -> Result<(f64, usize), String> {
+    (5..=10)
+        .rev()
+        .find_map(|sps| {
+            let out = SYMBOL_RATE * sps as f64;
+            let d = rate_hz / out;
+            (d.fract() == 0.0 && d >= 1.0).then_some((out, d as usize))
+        })
+        .ok_or_else(|| format!("no decimation from {rate_hz} S/s to a whole number of samples per symbol"))
+}
+
+/// The channel filter proper, at the channel rate.
+pub(crate) fn channel_filter(rate_hz: f64) -> Vec<f32> {
+    lowpass(taps_for(CHANNEL_TRANSITION_HZ / rate_hz), (PASS_HZ + CHANNEL_TRANSITION_HZ / 2.0) / rate_hz)
+}
+
 impl Channel {
-    /// A channel `offset_hz` from the centre of samples at `rate_hz`. Its
-    /// output rate is 4800 × (5..=10) samples a second, whichever divides the
-    /// input rate in small stages.
+    /// A channel `offset_hz` from the centre of samples at `rate_hz`, at the
+    /// rate [`decimation`] picks, decimated in small stages.
     pub fn new(rate_hz: f64, offset_hz: f64) -> Result<Channel, String> {
-        let (out_rate, factors) = (5..=10)
-            .rev()
-            .find_map(|sps| {
-                let out = SYMBOL_RATE * sps as f64;
-                let d = rate_hz / out;
-                (d.fract() == 0.0 && d >= 1.0).then(|| stages(d as usize).map(|s| (out, s))).flatten()
-            })
-            .ok_or_else(|| format!("no decimation from {rate_hz} S/s to a whole number of samples per symbol"))?;
+        let (out_rate, d) = decimation(rate_hz)?;
+        let factors = stages(d).ok_or_else(|| format!("decimation by {d} isn't in stages of 8 or less"))?;
         let mut stages = Vec::new();
         let mut r = rate_hz;
         for &d in &factors {
@@ -60,9 +71,7 @@ impl Channel {
             stages.push(Decimator::new(lowpass(taps_for(width), 0.5 / d as f64), d));
             r = out;
         }
-        // The channel filter proper, at the output rate.
-        let width = CHANNEL_TRANSITION_HZ / r;
-        stages.push(Decimator::new(lowpass(taps_for(width), (PASS_HZ + CHANNEL_TRANSITION_HZ / 2.0) / r), 1));
+        stages.push(Decimator::new(channel_filter(r), 1));
         let w = -2.0 * std::f64::consts::PI * offset_hz / rate_hz;
         Ok(Channel {
             step: Complex64::from_polar(1.0, w),
@@ -126,8 +135,9 @@ mod tests {
     #[test]
     fn picks_its_channel_and_rejects_the_next() {
         let fs = 2.4e6;
-        let tone =
-            |f: f64| -> Vec<Complex32> { (0..240_000).map(|i| Complex32::from_polar(1.0, (2.0 * std::f64::consts::PI * f * i as f64 / fs) as f32)).collect() };
+        let tone = |f: f64| -> Vec<Complex32> {
+            (0..240_000).map(|i| Complex32::from_polar(1.0, ((2.0 * std::f64::consts::PI * f * i as f64 / fs) % (2.0 * std::f64::consts::PI)) as f32)).collect()
+        };
         let power = |x: &[Complex32]| x[200..].iter().map(|s| s.norm_sqr()).sum::<f32>() / (x.len() - 200) as f32;
         // 1 kHz into a channel at +300 kHz.
         let mut ch = Channel::new(fs, 300_000.0).unwrap();

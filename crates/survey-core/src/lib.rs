@@ -5,8 +5,11 @@
 //! radio and on a recording, and is tested on recordings.
 //!
 //! - [`dsp`]: filters, channel extraction, FM discrimination.
+//! - [`survey`]: the survey itself: hops, carrier detection, decoding every
+//!   candidate at once, a record per candidate.
 //! - [`p25`]: frame sync, NID, trellis and CRC; TSBK and TDMA MAC broadcast parsing, the band plan, and what a
 //!   control channel has told us about its site ([`p25::SiteInfo`]).
 
 pub mod dsp;
 pub mod p25;
+pub mod survey;

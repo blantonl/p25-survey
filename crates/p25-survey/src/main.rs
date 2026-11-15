@@ -2,10 +2,13 @@
 //!   p25-survey info <recording>
 //!   p25-survey decode <recording> --freq MHz[,MHz…] [--seconds S]
 
+mod record;
+mod scan;
+
 use std::process::ExitCode;
 use std::time::Instant;
 
-use survey_core::dsp::Channel;
+use survey_core::dsp::{Channelizer, HeadId};
 use survey_core::p25::nid::duid;
 use survey_core::p25::receiver::{ControlChannel, KINDS, Kind};
 use survey_radio::sigmf::Recording;
@@ -13,6 +16,9 @@ use survey_radio::sigmf::Recording;
 const USAGE: &str = "usage:
   p25-survey info <recording>
   p25-survey decode <recording> --freq MHz[,MHz...] [--seconds S] [--json]
+  p25-survey detect <recording> [--at S] [--look S] [--threshold dB]
+  p25-survey scan <recording>... [--start MHz] [--stop MHz] [--threshold dB] [--max-dwell S]
+                  [--output survey.json] [--hide-no-cc]
 (a recording is a SigMF .sigmf-meta / .sigmf-data, or its name without either)";
 
 fn main() -> ExitCode {
@@ -20,6 +26,8 @@ fn main() -> ExitCode {
     let r = match args.first().map(String::as_str) {
         Some("info") if args.len() == 2 => info(&args[1]),
         Some("decode") if args.len() >= 2 => decode(&args[1], &args[2..]),
+        Some("detect") if args.len() >= 2 => detect(&args[1], &args[2..]),
+        Some("scan") => scan::scan(&args[1..]),
         _ => {
             eprintln!("{USAGE}");
             return ExitCode::from(2);
@@ -35,7 +43,7 @@ fn main() -> ExitCode {
 }
 
 /// `--name value` from `rest`.
-fn opt<'a>(rest: &'a [String], name: &str) -> Option<&'a str> {
+pub(crate) fn opt<'a>(rest: &'a [String], name: &str) -> Option<&'a str> {
     rest.iter().position(|a| a == name).and_then(|i| rest.get(i + 1)).map(String::as_str)
 }
 
@@ -69,10 +77,39 @@ fn info(path: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The channels that stand out in a look at a recording (the scan's first step).
+fn detect(path: &str, rest: &[String]) -> Result<(), String> {
+    use survey_core::dsp::detect::{DetectConfig, Detector};
+    let r = Recording::open(path).map_err(|e| e.to_string())?;
+    let num = |name: &str, default: f64| opt(rest, name).map_or(Ok(default), |v| v.parse::<f64>().map_err(|_| format!("{name}: a number")));
+    let (at, look) = (num("--at", 0.5)?, num("--look", 0.35)?);
+    let cfg = DetectConfig { threshold_db: num("--threshold", DetectConfig::default().threshold_db)?, ..Default::default() };
+    let mut rd = r.reader().map_err(|e| e.to_string())?;
+    let mut block = Vec::new();
+    let mut skip = (at * r.rate_hz) as usize;
+    while skip > 0 {
+        let n = rd.read(&mut block, skip.min(1 << 18)).map_err(|e| e.to_string())?;
+        if n == 0 {
+            return Err("the recording ends first".into());
+        }
+        skip -= n;
+    }
+    let mut det = Detector::new(r.rate_hz);
+    rd.read(&mut block, (look * r.rate_hz) as usize).map_err(|e| e.to_string())?;
+    det.push(&block);
+    let half = r.rate_hz / 2.0 * 0.85;
+    let found = det.find(r.center_hz, r.center_hz - half, r.center_hz + half, &cfg);
+    println!("{} channel(s) {:.1} dB or more over the floor, {:.2} s from {:.2} s:", found.len(), cfg.threshold_db, look, at);
+    for f in &found {
+        println!("  {:.5} MHz  {:5.1} dB", f.freq_hz / 1e6, f.level_db);
+    }
+    Ok(())
+}
+
 /// One frequency being decoded.
 struct Rx {
     freq_hz: f64,
-    channel: Channel,
+    head: HeadId,
     cc: ControlChannel,
     iq: Vec<num_complex::Complex32>,
     tsbks: Vec<survey_core::p25::receiver::Tsbk>,
@@ -87,13 +124,17 @@ fn decode(path: &str, rest: &[String]) -> Result<(), String> {
         .map(|f| f.trim().parse::<f64>().map(|m| (m * 1e6).round()).map_err(|_| format!("--freq: {f}?")))
         .collect::<Result<_, _>>()?;
     let seconds: f64 = opt(rest, "--seconds").map_or(Ok(f64::INFINITY), |s| s.parse().map_err(|_| "--seconds: a number".to_string()))?;
-    let mut rxs = freqs
+    let mut chz = Channelizer::new(r.rate_hz)?;
+    let mut rxs: Vec<Rx> = freqs
         .iter()
-        .map(|&f| {
-            let channel = Channel::new(r.rate_hz, f - r.center_hz)?;
-            Ok(Rx { freq_hz: f, cc: ControlChannel::new(channel.output_rate(), channel.samples_per_symbol()), channel, iq: Vec::new(), tsbks: Vec::new() })
+        .map(|&f| Rx {
+            freq_hz: f,
+            head: chz.add(f - r.center_hz),
+            cc: ControlChannel::new(chz.output_rate(), chz.samples_per_symbol()),
+            iq: Vec::new(),
+            tsbks: Vec::new(),
         })
-        .collect::<Result<Vec<_>, String>>()?;
+        .collect();
     let t0 = Instant::now();
     let mut rd = r.reader().map_err(|e| e.to_string())?;
     let mut block = Vec::new();
@@ -101,9 +142,9 @@ fn decode(path: &str, rest: &[String]) -> Result<(), String> {
     let mut done = 0u64;
     while done < limit && rd.read(&mut block, (1 << 18).min((limit - done) as usize)).map_err(|e| e.to_string())? > 0 {
         done += block.len() as u64;
+        chz.process(&block);
         for rx in &mut rxs {
-            rx.iq.clear();
-            rx.channel.process(&block, &mut rx.iq);
+            chz.take(rx.head, &mut rx.iq);
             rx.tsbks.clear();
             rx.cc.push(&rx.iq, &mut rx.tsbks);
         }

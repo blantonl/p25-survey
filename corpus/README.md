@@ -50,6 +50,18 @@ Outputs in `baseline/`: `<name>.phase1.json`,
 `<name>.<demod>.records.ndjson` (one SurveyRecord plus fec stats per
 candidate), `<name>.<demod>.msgs.ndjson` (every message, in order).
 
+## Expected results
+
+`expected.json`: the control channels a scan of each band must find, with
+their identity (NAC, WACN, system, RFSS, site; no unit IDs), and the copies
+it must call copies. `cargo test` checks them when the recordings are in
+`corpus/raw/` (and skips them when not). Taken from the Rust scan on
+2026-11-15 and checked against the op25 baseline: every site op25 identified
+is in it, and these op25 never decoded: 852.7625 (BEE00/44A 1-6), 853.3
+(BEE00/3BA 1-1), 858.3125 (BEE00/693 1-3), 769.78125 (BEE00/378 1-20),
+771.73125 (BEE00/378 1-23), 771.98125 (BEE00/44A 1-11), 773.18125 (44A
+1-10).
+
 ## Using it
 
 The Rust decoder should, on each recording, decode at least the TSBKs op25

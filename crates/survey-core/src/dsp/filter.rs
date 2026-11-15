@@ -64,7 +64,7 @@ mod tests {
     use super::*;
 
     fn tone(f: f64, n: usize) -> Vec<Complex32> {
-        (0..n).map(|i| Complex32::from_polar(1.0, (2.0 * std::f64::consts::PI * f * i as f64) as f32)).collect()
+        (0..n).map(|i| Complex32::from_polar(1.0, ((2.0 * std::f64::consts::PI * f * i as f64) % (2.0 * std::f64::consts::PI)) as f32)).collect()
     }
 
     fn power(x: &[Complex32]) -> f32 {

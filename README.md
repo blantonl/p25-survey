@@ -5,11 +5,12 @@ program: no GNU Radio, no op25, no Python. Scan a band with an SDR, find the
 P25 control channels, and log each site's identity, band plan, neighbours and
 secondary control channels, cross-referenced against RadioReference.
 
-**Status: early.** It decodes control channels from recordings
-(`p25-survey decode`) with a C4FM and a CQPSK receiver side by side: 115 % of
-what op25 decodes on the [corpus](corpus/README.md), and sites op25 misses.
-Next: the shared channelizer, the scan, then radios. Until it can do a
-survey, use the Python version.
+**Status: early.** It surveys recordings end to end (`p25-survey scan`):
+on the [corpus](corpus/README.md) it finds every control channel op25 does,
+and more, with their identity, band plan, neighbours and secondary control
+channels, and writes records the Python version's reports read. Next:
+radios (Airspy first), then RadioReference and the reports. Until it runs on
+a radio, use the Python version.
 
 ## Layout
 
@@ -31,7 +32,9 @@ cargo build --release
 cargo test
 ./target/release/p25-survey info corpus/raw/800-a-853.4-2s
 ./target/release/p25-survey decode corpus/raw/800-a-853.4 --freq 855.0625,851.0875
-python3 corpus/compare.py          # against the op25 baseline
+./target/release/p25-survey scan corpus/raw/800-{a-853.4,b-857.6,c-862.6,d-866.6} \
+    --start 851 --stop 869 --hide-no-cc --output /tmp/survey-800.json
+python3 corpus/compare.py          # decoding against the op25 baseline
 ```
 
 See [DECISIONS.md](DECISIONS.md) for why it is built the way it is.

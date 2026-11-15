@@ -119,6 +119,58 @@ DUID 0 (all zeros). On 852.375 that was 176 frames against 160 real ones.
 No transmitter sends either (FFF is a receiver's "any NAC"), so both are
 rejected.
 
+## 2026-11-15 — The channelizer: one FFT for every channel
+
+Overlap-save: N-sample blocks overlapping by the prefilter's length (less
+one) are transformed once; each channel takes the N/D bins around it,
+weighted by the prefilter, and an inverse FFT of N/D points gives it its
+samples moved to 0 Hz and decimated by D. A per-block phase correction keeps
+the move continuous and a small NCO takes off the rest of the offset. The
+prefilter must be nothing past ±(output rate)/2, since a channel keeps only
+the bins inside that; otherwise the block edges show. Eleven control
+channels of the corpus decode 6.4x faster than real time on one core.
+
+## 2026-11-15 — Detection on the channel raster
+
+P25 channels sit on a raster: 6.25 kHz (2.5 kHz on VHF high band). Over the
+look (0.35 s) each ~1 kHz bin's power is taken at its 20th percentile, so a
+carrier that dropped out at all reads low. Each raster channel's power (±4
+kHz) against the local floor (the median over ±150 kHz) is its level; a
+candidate is 4.5 dB or more over the floor, the strongest within two raster
+steps, and not up without a break for 25 kHz either side (something wide).
+Two control channels 25 kHz apart (859.7125 and 859.7375) both show, because
+the level drops to the floor between them. A threshold this low is cheap:
+candidates are decoded together and one that isn't P25 is dropped at 2 s.
+
+## 2026-11-15 — When a candidate is done
+
+Not P25: no frame by 2 s. Not a control channel: frames but no TSDU by 2 s
+(a weak control channel whose TSDUs haven't passed a CRC yet stays).
+Complete: WACN, system, RFSS, site, a band plan and its own channel heard;
+every channel number it named resolved; and nothing new for 3 s (6 s if some
+channel number never resolves: a few sites name channels from a table they
+never broadcast). At the 12 s cap it is complete if everything heard
+resolves, otherwise partial. A channel complete in one hop is skipped by the
+next, overlapping one.
+
+## 2026-11-15 — Copies
+
+The corpus has control channels heard where they aren't: the radio's own
+image (773.23125 is 771.36875 mirrored about the tuning centre, 772.3) and
+intermodulation. A record is a copy if it announces another frequency for
+itself, if it has the same NAC, system, RFSS and site as one that decodes
+better, or if it is at the mirror image of one at least 10 dB stronger in
+the same hop. Copies keep their record, marked, and aren't complete.
+
+## 2026-11-15 — Records in the Python schema
+
+`scan --output` writes NDJSON the Python p25-survey's report and submission
+tools read unchanged (checked with its report.py); our additions (verdict,
+level, announced frequency, copy, per-receiver counts) are at the top level,
+since it builds neighbours, band plan entries and the signal block from
+exactly their keys. A hop's records are written when the hop ends: a copy
+can't be told from what it copies until both are in.
+
 ## 2026-11-15 — License
 
 GPL-3.0-or-later, as the Python version. That was required there by op25;

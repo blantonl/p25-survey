@@ -9,6 +9,7 @@ repository.workspace = true
 
 [dependencies]
 num-complex.workspace = true
+rustfft = "6"
 
 [dev-dependencies]
 serde.workspace = true
