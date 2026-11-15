@@ -25,6 +25,10 @@ p25-survey scan --radio airspy --start 851 --stop 869 --gain 14 \
 p25-survey report survey-800.json --rr      # look a saved survey up again
 ```
 
+Ctrl-C finishes the tuning under way and writes the reports; `--resume`
+(with the same `--output`) carries on where a survey stopped. The reports
+give the radio's clock error; pass it back as `--ppm` (e.g. `--ppm 0.83`).
+
 `--rr` asks for a RadioReference login (a premium subscription) every run
 and never stores it.
 

@@ -21,6 +21,8 @@ serde.workspace = true
 ureq = "3"
 roxmltree = "0.21"
 rpassword = "7"
+# Ctrl-C: finish the hop, write the reports.
+ctrlc = "3"
 
 [dev-dependencies]
 serde_json.workspace = true

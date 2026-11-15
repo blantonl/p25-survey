@@ -27,7 +27,8 @@ const USAGE: &str = "usage:
             rtlsdr (--gain: tuner dB; default AGC)
             hackrf (--gain: LNA dB 0-40; --vga 0-62, default 24; --amp: the 14 dB amplifier)
   p25-survey scan <recording>... [--start MHz] [--stop MHz] [scan options]
-      scan options: [--threshold dB] [--max-dwell S] [--output survey.json] [--hide-no-cc]
+      scan options: [--threshold dB] [--max-dwell S] [--output survey.json [--resume]] [--hide-no-cc]
+                    [--ppm N]  (the radio's error, as the report gives it; a radio only)
                     [--auto-gain [--gain-sweep 6,9,12,15,18]]  (a radio only)
                     [--rr [--rr-stdin]]  (look each control channel up in RadioReference;
                     --rr-stdin: username and password on standard input, not asked)
@@ -143,6 +144,7 @@ pub(crate) fn write_reports(survey: &std::path::Path, rows: &[rows::Row]) -> Res
 fn report_cmd(path: &str, rest: &[String]) -> Result<(), String> {
     let path = std::path::Path::new(path);
     let mut rows = rows::read(path)?;
+    rows::keep_latest(&mut rows);
     if rest.iter().any(|a| a == "--rr") {
         let client = rr_login(rest)?;
         let mut n = 0;

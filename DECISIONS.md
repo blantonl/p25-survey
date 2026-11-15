@@ -294,6 +294,27 @@ Tested at each one's rate with the corpus resampled (2.4 MS/s quantised to
 drivers themselves have not run against their radios yet (dragon1 has an
 Airspy only).
 
+## 2026-11-15 — Resume, Ctrl-C, --ppm
+
+`--output` truncates, as the Python version's does; `--resume` keeps the
+records there and appends. What they cover isn't surveyed again, except
+partial control channels, which get another chance; a channel surveyed again
+keeps only its newest record (the file is rewritten at the end, and
+`report` reads it the same way). Each hop's records are synced to disk as
+it ends, so a crash loses at most the hop under way.
+
+Ctrl-C once ends the hop under way with what each candidate has (partial),
+waits for RR, and writes the reports; twice, it stops at once. On the
+corpus: stopped after 1.2 s, resumed, and the same 19 control channels as a
+run straight through.
+
+`--ppm N` takes the radio's error as the report gives it (+0.83: it reads
+0.83 ppm high) and asks the radio for each centre corrected by it. Records
+carry it (`sdr_ppm`), and the clock in the reports is the whole error
+(correction plus what was still measured), so its advice is the same with
+or without one. Live: carrier offsets from about +750 Hz to within ±140 Hz
+(the carrier measurement's own noise, about ±0.15 ppm).
+
 ## 2026-11-15 — License
 
 GPL-3.0-or-later, as the Python version. That was required there by op25;

@@ -54,14 +54,15 @@ impl Source {
         }
     }
 
-    fn tune(&mut self, hz: f64) -> Result<(), String> {
+    /// Tune to `hz`; a radio `ppm` off is asked for `hz` corrected by it.
+    fn tune(&mut self, hz: f64, ppm: f64) -> Result<(), String> {
         match self {
             Source::Recordings { recs, reader } => {
                 let r = recs.iter().find(|r| r.center_hz == hz).ok_or("no recording at a hop's centre")?;
                 *reader = Some(r.reader().map_err(|e| e.to_string())?);
                 Ok(())
             }
-            Source::Radio(r) => r.tune(hz).map_err(|e| e.to_string()),
+            Source::Radio(r) => r.tune(hz * (1.0 + ppm * 1e-6)).map_err(|e| e.to_string()),
         }
     }
 
@@ -197,7 +198,25 @@ pub fn scan(args: &[String]) -> Result<(), String> {
             return Err("--gain-sweep: at least two gains".into());
         }
     }
+    // --ppm: the radio's error, as the report gives it (+0.83: it reads 0.83
+    // ppm high); every tuning is corrected by it.
+    let ppm = num("--ppm")?.unwrap_or(0.0);
+    if ppm != 0.0 && matches!(source, Source::Recordings { .. }) {
+        return Err("scan: --ppm is for a radio (a recording can't be retuned)".into());
+    }
     let out_path = crate::opt(rest, "--output").map(std::path::PathBuf::from);
+    // --resume: the records already in --output stay; what they cover isn't
+    // surveyed again (except partial control channels: another chance).
+    let resume = rest.iter().any(|a| a == "--resume");
+    let mut rows: Vec<Row> = match (&out_path, resume) {
+        (Some(p), true) if p.exists() => crate::rows::read(p)?,
+        (None, true) => return Err("scan: --resume needs --output".into()),
+        _ => Vec::new(),
+    };
+    if resume {
+        cfg.done_hz = rows.iter().filter(|r| !(r.is_control() && !r.complete)).map(|r| r.freq_hz as f64).collect();
+        println!("Resuming: {} record(s) already in {}", rows.len(), out_path.as_ref().unwrap().display());
+    }
     // Log in before scanning, so a wrong password doesn't cost a scan.
     let rr = if rest.iter().any(|a| a == "--rr") { Some(crate::rr_login(rest)?) } else { None };
     // RR is looked up on a thread of its own: the radio doesn't wait for HTTP.
@@ -218,7 +237,8 @@ pub fn scan(args: &[String]) -> Result<(), String> {
                 };
                 for batch in rx {
                     seen.extend(batch.iter().map(|(_, r)| r.clone()));
-                    for (i, row) in batch.into_iter().filter(|(_, r)| r.is_control()) {
+                    // (Records resumed with RR's answer already keep it.)
+                    for (i, row) in batch.into_iter().filter(|(_, r)| r.is_control() && r.rr.is_none()) {
                         let borrowable = row.wacn.is_some() || seen.iter().any(|o| o.sysid == row.sysid && o.wacn.is_some());
                         if borrowable || row.sysid.is_none() {
                             look(i, &row, &seen, &mut done);
@@ -232,15 +252,20 @@ pub fn scan(args: &[String]) -> Result<(), String> {
                 }
                 done
             });
+            if !rows.is_empty() {
+                let _ = tx.send(rows.iter().cloned().enumerate().collect());
+            }
             (Some(tx), Some(worker))
         }
         None => (None, None),
     };
     let mut out_file = match &out_path {
-        Some(p) => Some(BufWriter::new(File::create(p).map_err(|e| format!("{}: {e}", p.display()))?)),
+        Some(p) => {
+            let f = if resume { std::fs::OpenOptions::new().create(true).append(true).open(p) } else { File::create(p) };
+            Some(BufWriter::new(f.map_err(|e| format!("{}: {e}", p.display()))?))
+        }
         None => None,
     };
-    let mut rows: Vec<Row> = Vec::new();
     let hide = rest.iter().any(|a| a == "--hide-no-cc");
 
     println!(
@@ -255,6 +280,20 @@ pub fn scan(args: &[String]) -> Result<(), String> {
         rate / 1e6,
         cfg.detect.threshold_db
     );
+    // Ctrl-C once: finish this hop with what it has, then the reports.
+    // Twice: stop at once (the records so far are on disk already).
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    {
+        let stop = stop.clone();
+        let _ = ctrlc::set_handler(move || {
+            if stop.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                eprintln!("\np25-survey: stopped");
+                std::process::exit(130);
+            }
+            eprintln!("\np25-survey: stopping after this hop (Ctrl-C again to stop now)");
+        });
+    }
+    let mut stopped = false;
     let t0 = Instant::now();
     let mut survey = Survey::new(cfg);
     let hops = survey.config().hops.clone();
@@ -270,7 +309,7 @@ pub fn scan(args: &[String]) -> Result<(), String> {
         while let Some(c) = survey.command() {
             match c {
                 Command::Tune(hz) => {
-                    source.tune(hz)?;
+                    source.tune(hz, ppm)?;
                     survey.tuned(hz, &mut out);
                 }
                 Command::Gain(g) => {
@@ -291,6 +330,10 @@ pub fn scan(args: &[String]) -> Result<(), String> {
             Read::Nothing => eprintln!("p25-survey: no samples from the radio for 2 s"),
             Read::Ended => survey.end_of_samples(&mut out),
         }
+        if !stopped && stop.load(std::sync::atomic::Ordering::SeqCst) {
+            stopped = true;
+            survey.stop(&mut out);
+        }
         for o in out.drain(..) {
             match o {
                 Output::Hop { index, center_hz } => {
@@ -299,7 +342,7 @@ pub fn scan(args: &[String]) -> Result<(), String> {
                         &mut written,
                         &hops,
                         hide,
-                        (source.name(), gain_number(&source, user_gain)),
+                        (source.name(), gain_number(&source, user_gain), ppm),
                         rr_tx.as_ref(),
                         &mut rows,
                         out_file.as_mut(),
@@ -314,7 +357,7 @@ pub fn scan(args: &[String]) -> Result<(), String> {
                         &mut written,
                         &hops,
                         hide,
-                        (source.name(), gain_number(&source, user_gain)),
+                        (source.name(), gain_number(&source, user_gain), ppm),
                         rr_tx.as_ref(),
                         &mut rows,
                         out_file.as_mut(),
@@ -327,7 +370,7 @@ pub fn scan(args: &[String]) -> Result<(), String> {
                     &mut written,
                     &hops,
                     hide,
-                    (source.name(), gain_number(&source, user_gain)),
+                    (source.name(), gain_number(&source, user_gain), ppm),
                     rr_tx.as_ref(),
                     &mut rows,
                     out_file.as_mut(),
@@ -367,19 +410,29 @@ pub fn scan(args: &[String]) -> Result<(), String> {
     if !sweeps.is_empty() {
         print_bands(&sweeps, unit);
     }
-    if let Some(c) = crate::report::clock(&rows) {
-        println!("Radio clock: {:+.2} ppm ({} control channels, consistency {})", c.median_ppm, c.n, c.consistency);
-    }
+    let mut rewrite = false;
     if let Some(worker) = rr_worker {
         drop(rr_tx);
         println!("Waiting for the RadioReference lookups...");
         for (i, e) in worker.join().map_err(|_| "the RadioReference lookups failed")? {
             rows[i].rr = Some(e);
         }
-        if let Some(p) = &out_path {
-            drop(out_file.take());
-            crate::rows::write(p, &rows)?;
-        }
+        rewrite = true;
+    }
+    if resume {
+        // A channel surveyed again keeps only its newest record.
+        crate::rows::keep_latest(&mut rows);
+        rewrite = true;
+    }
+    if let (true, Some(p)) = (rewrite, &out_path) {
+        drop(out_file.take());
+        crate::rows::write(p, &rows)?;
+    }
+    if resume {
+        println!("In all, with the records resumed: {} control channel(s).", rows.iter().filter(|r| r.is_control()).count());
+    }
+    if let Some(c) = crate::report::clock(&rows) {
+        println!("Radio clock: {:+.2} ppm ({} control channels, consistency {})", c.median_ppm, c.n, c.consistency);
     }
     if let Some(p) = &out_path {
         crate::write_reports(p, &rows)?;
@@ -476,7 +529,7 @@ fn flush(
     written: &mut usize,
     hops: &[f64],
     hide: bool,
-    (driver, gain_db): (&str, Option<f64>),
+    (driver, gain_db, ppm): (&str, Option<f64>, f64),
     rr: Option<&std::sync::mpsc::Sender<Vec<(usize, Row)>>>,
     rows: &mut Vec<Row>,
     file: Option<&mut BufWriter<File>>,
@@ -490,7 +543,8 @@ fn flush(
             println!("{}", row(r));
         }
     }
-    let new_rows: Vec<Row> = new.iter().map(|r| serde_json::from_value(to_json(r, driver, gain_db)).map_err(|e| e.to_string())).collect::<Result<_, _>>()?;
+    let new_rows: Vec<Row> =
+        new.iter().map(|r| serde_json::from_value(to_json(r, driver, gain_db, ppm)).map_err(|e| e.to_string())).collect::<Result<_, _>>()?;
     if let Some(tx) = rr {
         let _ = tx.send(new_rows.iter().cloned().enumerate().map(|(k, r)| (rows.len() + k, r)).collect());
     }
@@ -499,6 +553,8 @@ fn flush(
             writeln!(f, "{}", serde_json::to_string(r).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
         }
         f.flush().map_err(|e| e.to_string())?;
+        // On the disk, not just in the OS: a crash keeps every hop done.
+        f.get_ref().sync_data().map_err(|e| e.to_string())?;
     }
     rows.extend(new_rows);
     *written = records.len();

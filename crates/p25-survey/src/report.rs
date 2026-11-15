@@ -52,7 +52,9 @@ pub fn clock(rows: &[Row]) -> Option<Clock> {
     let measured: Vec<(u64, f64)> = rows
         .iter()
         .filter(|r| r.is_control() && r.signal.decode_rate_pct.unwrap_or(0.0) >= 50.0)
-        .filter_map(|r| Some((r.freq_hz, r.carrier_offset_hz?)))
+        // The radio's whole error: the correction it had (--ppm) and what
+        // was still measured, so the advice doesn't depend on the correction.
+        .filter_map(|r| Some((r.freq_hz, r.carrier_offset_hz? + r.sdr_ppm * 1e-6 * r.freq_hz as f64)))
         .collect();
     let (source, samples) = if !measured.is_empty() {
         ("measured", measured)

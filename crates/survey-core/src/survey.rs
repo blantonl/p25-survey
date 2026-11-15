@@ -46,6 +46,8 @@ pub struct SurveyConfig {
     pub gains: Vec<f32>,
     /// How long each gain is measured, seconds.
     pub sweep_s: f64,
+    /// Channels already surveyed (a resumed survey): not decoded again.
+    pub done_hz: Vec<f64>,
 }
 
 impl SurveyConfig {
@@ -65,6 +67,7 @@ impl SurveyConfig {
             max_dwell_s: 12.0,
             gains: Vec::new(),
             sweep_s: 3.0,
+            done_hz: Vec::new(),
         }
     }
 }
@@ -304,7 +307,7 @@ impl Survey {
     pub fn new(cfg: SurveyConfig) -> Survey {
         let first = cfg.hops.first().copied();
         Survey {
-            complete: Vec::new(),
+            complete: cfg.done_hz.clone(),
             hop: 0,
             center: first.unwrap_or(0.0),
             state: if first.is_some() { State::Tuning } else { State::Done },
@@ -464,6 +467,25 @@ impl Survey {
                 self.next_hop(out);
             }
         }
+    }
+
+    /// Stop now (the user asked): the hop's candidates are concluded with
+    /// what they have, and the survey is done.
+    pub fn stop(&mut self, out: &mut Vec<Output>) {
+        if matches!(self.state, State::Done) {
+            return;
+        }
+        if matches!(self.state, State::Dwell { .. }) {
+            // Concluding the last candidate would move on to the next hop.
+            self.cfg.hops.truncate(self.hop + 1);
+            self.cfg.gains.clear();
+            self.conclude(true, out);
+        }
+        if !matches!(self.state, State::Done) {
+            self.state = State::Done;
+            out.push(Output::Done);
+        }
+        self.pending.clear();
     }
 
     /// The samples have run out (a recording ended): finish the hop with
@@ -659,6 +681,21 @@ mod tests {
         let s = gain_scores(&tsbks);
         assert_eq!(best_gain(&gains, &s), Some(12.0));
         assert_eq!(best_gain(&gains, &gain_scores(&[vec![0], vec![0]])), None);
+    }
+
+    #[test]
+    fn stopping_ends_it() {
+        let mut cfg = SurveyConfig::new(2.4e6, (851e6, 853e6));
+        cfg.hops = vec![851.5e6, 852.5e6];
+        let mut s = Survey::new(cfg);
+        let mut out = Vec::new();
+        let Some(Command::Tune(c)) = s.command() else { panic!() };
+        s.tuned(c, &mut out);
+        s.stop(&mut out);
+        assert!(s.is_done() && s.command().is_none());
+        assert!(matches!(out.last(), Some(Output::Done)));
+        s.stop(&mut out);
+        assert_eq!(out.iter().filter(|o| matches!(o, Output::Done)).count(), 1);
     }
 
     #[test]

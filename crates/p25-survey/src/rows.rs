@@ -119,6 +119,19 @@ impl Row {
     }
 }
 
+/// One record per channel (within 1 kHz): the latest. A resumed survey that
+/// decoded a channel again appends its new record after the old.
+pub fn keep_latest(rows: &mut Vec<Row>) {
+    let mut keep = vec![true; rows.len()];
+    for i in 0..rows.len() {
+        if rows[i + 1..].iter().any(|later| later.freq_hz.abs_diff(rows[i].freq_hz) < 1000) {
+            keep[i] = false;
+        }
+    }
+    let mut k = keep.into_iter();
+    rows.retain(|_| k.next().unwrap());
+}
+
 pub fn read(path: &Path) -> Result<Vec<Row>, String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
     text.lines()
@@ -159,6 +172,14 @@ pub fn band_name(freq_hz: u64) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_latest_record_per_channel() {
+        let r = |f: u64, ts: &str| Row { freq_hz: f, ts: ts.into(), ..Default::default() };
+        let mut rows = vec![r(851_087_500, "old"), r(852_375_000, "only"), r(851_087_500, "new")];
+        keep_latest(&mut rows);
+        assert_eq!(rows.iter().map(|r| r.ts.as_str()).collect::<Vec<_>>(), vec!["only", "new"]);
+    }
 
     #[test]
     fn mhz_is_exact() {
