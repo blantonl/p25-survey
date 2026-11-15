@@ -1,0 +1,253 @@
+{
+ "800": {
+  "recordings": [
+   "800-a-853.4",
+   "800-b-857.6",
+   "800-c-862.6",
+   "800-d-866.6"
+  ],
+  "start_mhz": 851,
+  "stop_mhz": 869,
+  "control_channels": [
+   {
+    "freq_hz": 851087500,
+    "nac": "3CC",
+    "wacn": "00001",
+    "sysid": "3CC",
+    "rfss_id": 20,
+    "site_id": 1
+   },
+   {
+    "freq_hz": 852375000,
+    "nac": "C71",
+    "wacn": "BEE00",
+    "sysid": "C74",
+    "rfss_id": 1,
+    "site_id": 1
+   },
+   {
+    "freq_hz": 852762500,
+    "nac": "440",
+    "wacn": null,
+    "sysid": "44A",
+    "rfss_id": 1,
+    "site_id": 6
+   },
+   {
+    "freq_hz": 853300000,
+    "nac": "3B1",
+    "wacn": "BEE00",
+    "sysid": "3BA",
+    "rfss_id": 1,
+    "site_id": 1
+   },
+   {
+    "freq_hz": 853787500,
+    "nac": "443",
+    "wacn": "BEE00",
+    "sysid": "44A",
+    "rfss_id": 1,
+    "site_id": 3
+   },
+   {
+    "freq_hz": 854512500,
+    "nac": "F09",
+    "wacn": "C0907",
+    "sysid": "F09",
+    "rfss_id": 1,
+    "site_id": 1
+   },
+   {
+    "freq_hz": 854787500,
+    "nac": "00A",
+    "wacn": "46FA8",
+    "sysid": "00A",
+    "rfss_id": 10,
+    "site_id": 10
+   },
+   {
+    "freq_hz": 855062500,
+    "nac": "910",
+    "wacn": "DEE00",
+    "sysid": "911",
+    "rfss_id": 1,
+    "site_id": 64
+   },
+   {
+    "freq_hz": 855412500,
+    "nac": "04E",
+    "wacn": "46F74",
+    "sysid": "0D6",
+    "rfss_id": 78,
+    "site_id": 78
+   },
+   {
+    "freq_hz": 857212500,
+    "nac": "441",
+    "wacn": "BEE00",
+    "sysid": "44A",
+    "rfss_id": 2,
+    "site_id": 1
+   },
+   {
+    "freq_hz": 857837500,
+    "nac": "03C",
+    "wacn": "46F74",
+    "sysid": "0D6",
+    "rfss_id": 60,
+    "site_id": 60
+   },
+   {
+    "freq_hz": 858137500,
+    "nac": "440",
+    "wacn": "BEE00",
+    "sysid": "44A",
+    "rfss_id": 1,
+    "site_id": 2
+   },
+   {
+    "freq_hz": 858312500,
+    "nac": "693",
+    "wacn": "BEE00",
+    "sysid": "693",
+    "rfss_id": 1,
+    "site_id": 3
+   },
+   {
+    "freq_hz": 858437500,
+    "nac": "440",
+    "wacn": "BEE00",
+    "sysid": "44A",
+    "rfss_id": 1,
+    "site_id": 1
+   },
+   {
+    "freq_hz": 858537500,
+    "nac": "440",
+    "wacn": "BEE00",
+    "sysid": "44A",
+    "rfss_id": 1,
+    "site_id": 7
+   },
+   {
+    "freq_hz": 859212500,
+    "nac": "692",
+    "wacn": "BEE00",
+    "sysid": "693",
+    "rfss_id": 1,
+    "site_id": 2
+   },
+   {
+    "freq_hz": 859287500,
+    "nac": "690",
+    "wacn": "BEE00",
+    "sysid": "693",
+    "rfss_id": 1,
+    "site_id": 1
+   },
+   {
+    "freq_hz": 859712500,
+    "nac": "448",
+    "wacn": "BEE00",
+    "sysid": "44A",
+    "rfss_id": 1,
+    "site_id": 8
+   },
+   {
+    "freq_hz": 859737500,
+    "nac": "440",
+    "wacn": "BEE00",
+    "sysid": "44A",
+    "rfss_id": 3,
+    "site_id": 2
+   }
+  ]
+ },
+ "700": {
+  "recordings": [
+   "700-a-772.3"
+  ],
+  "start_mhz": 769,
+  "stop_mhz": 775,
+  "control_channels": [
+   {
+    "freq_hz": 769781250,
+    "nac": "370",
+    "wacn": "BEE00",
+    "sysid": "378",
+    "rfss_id": 1,
+    "site_id": 20
+   },
+   {
+    "freq_hz": 771368750,
+    "nac": "893",
+    "wacn": "BEE00",
+    "sysid": "899",
+    "rfss_id": 1,
+    "site_id": 3
+   },
+   {
+    "freq_hz": 771531250,
+    "nac": "046",
+    "wacn": "46F74",
+    "sysid": "0D6",
+    "rfss_id": 70,
+    "site_id": 70
+   },
+   {
+    "freq_hz": 771731250,
+    "nac": "370",
+    "wacn": "BEE00",
+    "sysid": "378",
+    "rfss_id": 1,
+    "site_id": 23
+   },
+   {
+    "freq_hz": 771981250,
+    "nac": "44B",
+    "wacn": "BEE00",
+    "sysid": "44A",
+    "rfss_id": 1,
+    "site_id": 11
+   },
+   {
+    "freq_hz": 772193750,
+    "nac": "032",
+    "wacn": "46F74",
+    "sysid": "0D6",
+    "rfss_id": 50,
+    "site_id": 50
+   },
+   {
+    "freq_hz": 773181250,
+    "nac": "44A",
+    "wacn": null,
+    "sysid": "44A",
+    "rfss_id": 1,
+    "site_id": 10
+   },
+   {
+    "freq_hz": 774568750,
+    "nac": "44A",
+    "wacn": "BEE00",
+    "sysid": "44A",
+    "rfss_id": 3,
+    "site_id": 1
+   },
+   {
+    "freq_hz": 774681250,
+    "nac": "891",
+    "wacn": "BEE00",
+    "sysid": "899",
+    "rfss_id": 1,
+    "site_id": 1
+   }
+  ],
+  "copies": [
+   {
+    "freq_hz": 773231250,
+    "copy_of_hz": 771368750
+   }
+  ]
+ }
+}

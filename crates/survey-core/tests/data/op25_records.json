@@ -1,0 +1,425 @@
+[
+ {
+  "freq_hz": 851087500,
+  "wacn": "00001",
+  "sysid": "3CC",
+  "nac": "3CC",
+  "rfss_id": 20,
+  "site_id": 1,
+  "iden_up": [
+   {
+    "iden": 0,
+    "base_freq_hz": 851006250,
+    "step_hz": 6250,
+    "offset_hz": -45000000,
+    "is_tdma": true,
+    "slots_per_carrier": 1
+   },
+   {
+    "iden": 1,
+    "base_freq_hz": 762006250,
+    "step_hz": 6250,
+    "offset_hz": 30000000,
+    "is_tdma": true,
+    "slots_per_carrier": 1
+   },
+   {
+    "iden": 14,
+    "base_freq_hz": 762006250,
+    "step_hz": 6250,
+    "offset_hz": 30000000,
+    "is_tdma": true,
+    "slots_per_carrier": 2
+   },
+   {
+    "iden": 15,
+    "base_freq_hz": 851006250,
+    "step_hz": 6250,
+    "offset_hz": -45000000,
+    "is_tdma": true,
+    "slots_per_carrier": 2
+   }
+  ],
+  "neighbors": [
+   {
+    "freq_hz": 773706250,
+    "rfss_id": 20,
+    "site_id": 2,
+    "sysid": null,
+    "wacn": null
+   }
+  ],
+  "secondary_cc": [
+   851462500,
+   851987500,
+   852462500,
+   852587500,
+   853562500,
+   853662500,
+   853812500,
+   853937500,
+   857387500
+  ]
+ },
+ {
+  "freq_hz": 855062500,
+  "wacn": "DEE00",
+  "sysid": "911",
+  "nac": "910",
+  "rfss_id": 1,
+  "site_id": 64,
+  "iden_up": [
+   {
+    "iden": 0,
+    "base_freq_hz": 851006250,
+    "step_hz": 6250,
+    "offset_hz": -45000000,
+    "is_tdma": false,
+    "slots_per_carrier": 1
+   },
+   {
+    "iden": 1,
+    "base_freq_hz": 762006250,
+    "step_hz": 6250,
+    "offset_hz": 30000000,
+    "is_tdma": false,
+    "slots_per_carrier": 1
+   },
+   {
+    "iden": 2,
+    "base_freq_hz": 151700000,
+    "step_hz": 6250,
+    "offset_hz": 1000000,
+    "is_tdma": false,
+    "slots_per_carrier": 1
+   },
+   {
+    "iden": 3,
+    "base_freq_hz": 450000000,
+    "step_hz": 6250,
+    "offset_hz": 5000000,
+    "is_tdma": false,
+    "slots_per_carrier": 1
+   },
+   {
+    "iden": 4,
+    "base_freq_hz": 470000000,
+    "step_hz": 6250,
+    "offset_hz": 3000000,
+    "is_tdma": false,
+    "slots_per_carrier": 1
+   },
+   {
+    "iden": 5,
+    "base_freq_hz": 151505000,
+    "step_hz": 12500,
+    "offset_hz": 1000000,
+    "is_tdma": true,
+    "slots_per_carrier": 2
+   },
+   {
+    "iden": 6,
+    "base_freq_hz": 450000000,
+    "step_hz": 12500,
+    "offset_hz": 5000000,
+    "is_tdma": true,
+    "slots_per_carrier": 2
+   },
+   {
+    "iden": 7,
+    "base_freq_hz": 151505000,
+    "step_hz": 12500,
+    "offset_hz": 1000000,
+    "is_tdma": false,
+    "slots_per_carrier": 1
+   },
+   {
+    "iden": 8,
+    "base_freq_hz": 440000000,
+    "step_hz": 12500,
+    "offset_hz": 5000000,
+    "is_tdma": false,
+    "slots_per_carrier": 1
+   },
+   {
+    "iden": 9,
+    "base_freq_hz": 851012500,
+    "step_hz": 12500,
+    "offset_hz": -45000000,
+    "is_tdma": true,
+    "slots_per_carrier": 2
+   },
+   {
+    "iden": 10,
+    "base_freq_hz": 150830000,
+    "step_hz": 5000,
+    "offset_hz": 8845000,
+    "is_tdma": false,
+    "slots_per_carrier": 1
+   },
+   {
+    "iden": 11,
+    "base_freq_hz": 150965000,
+    "step_hz": 5000,
+    "offset_hz": 8875000,
+    "is_tdma": false,
+    "slots_per_carrier": 1
+   },
+   {
+    "iden": 12,
+    "base_freq_hz": 151775000,
+    "step_hz": 2500,
+    "offset_hz": 7772500,
+    "is_tdma": false,
+    "slots_per_carrier": 1
+   }
+  ],
+  "neighbors": [
+   {
+    "freq_hz": 464550000,
+    "rfss_id": 1,
+    "site_id": 99,
+    "sysid": null,
+    "wacn": null
+   }
+  ],
+  "secondary_cc": [
+   860012500
+  ]
+ },
+ {
+  "freq_hz": 858137500,
+  "wacn": "BEE00",
+  "sysid": "44A",
+  "nac": "440",
+  "rfss_id": 1,
+  "site_id": 2,
+  "iden_up": [
+   {
+    "iden": 0,
+    "base_freq_hz": 851006250,
+    "step_hz": 6250,
+    "offset_hz": -45000000,
+    "is_tdma": false,
+    "slots_per_carrier": 1
+   },
+   {
+    "iden": 1,
+    "base_freq_hz": 762006250,
+    "step_hz": 6250,
+    "offset_hz": 30000000,
+    "is_tdma": false,
+    "slots_per_carrier": 1
+   },
+   {
+    "iden": 2,
+    "base_freq_hz": 851012500,
+    "step_hz": 12500,
+    "offset_hz": -45000000,
+    "is_tdma": true,
+    "slots_per_carrier": 2
+   },
+   {
+    "iden": 3,
+    "base_freq_hz": 762006250,
+    "step_hz": 12500,
+    "offset_hz": 30000000,
+    "is_tdma": true,
+    "slots_per_carrier": 2
+   },
+   {
+    "iden": 4,
+    "base_freq_hz": 148630000,
+    "step_hz": 2500,
+    "offset_hz": 900000,
+    "is_tdma": false,
+    "slots_per_carrier": 1
+   },
+   {
+    "iden": 5,
+    "base_freq_hz": 136000000,
+    "step_hz": 10000,
+    "offset_hz": -900000,
+    "is_tdma": false,
+    "slots_per_carrier": 1
+   },
+   {
+    "iden": 6,
+    "base_freq_hz": 141952500,
+    "step_hz": 7500,
+    "offset_hz": -900000,
+    "is_tdma": false,
+    "slots_per_carrier": 1
+   },
+   {
+    "iden": 7,
+    "base_freq_hz": 144522500,
+    "step_hz": 5000,
+    "offset_hz": 900000,
+    "is_tdma": false,
+    "slots_per_carrier": 1
+   }
+  ],
+  "neighbors": [
+   {
+    "freq_hz": 771181250,
+    "rfss_id": 1,
+    "site_id": 4,
+    "sysid": null,
+    "wacn": null
+   },
+   {
+    "freq_hz": 773231250,
+    "rfss_id": 5,
+    "site_id": 1,
+    "sysid": null,
+    "wacn": null
+   },
+   {
+    "freq_hz": 852762500,
+    "rfss_id": 1,
+    "site_id": 6,
+    "sysid": null,
+    "wacn": null
+   },
+   {
+    "freq_hz": 853387500,
+    "rfss_id": 1,
+    "site_id": 5,
+    "sysid": null,
+    "wacn": null
+   },
+   {
+    "freq_hz": 858437500,
+    "rfss_id": 1,
+    "site_id": 1,
+    "sysid": null,
+    "wacn": null
+   },
+   {
+    "freq_hz": 858537500,
+    "rfss_id": 1,
+    "site_id": 7,
+    "sysid": null,
+    "wacn": null
+   },
+   {
+    "freq_hz": 859712500,
+    "rfss_id": 1,
+    "site_id": 8,
+    "sysid": null,
+    "wacn": null
+   }
+  ],
+  "secondary_cc": [
+   852737500,
+   852862500,
+   859437500
+  ]
+ },
+ {
+  "freq_hz": 771531250,
+  "wacn": "46F74",
+  "sysid": "0D6",
+  "nac": "046",
+  "rfss_id": 70,
+  "site_id": 70,
+  "iden_up": [
+   {
+    "iden": 0,
+    "base_freq_hz": 851012500,
+    "step_hz": 12500,
+    "offset_hz": -45000000,
+    "is_tdma": false,
+    "slots_per_carrier": 1
+   },
+   {
+    "iden": 1,
+    "base_freq_hz": 769006250,
+    "step_hz": 6250,
+    "offset_hz": 30000000,
+    "is_tdma": false,
+    "slots_per_carrier": 1
+   },
+   {
+    "iden": 8,
+    "base_freq_hz": 851012500,
+    "step_hz": 12500,
+    "offset_hz": -45000000,
+    "is_tdma": true,
+    "slots_per_carrier": 2
+   },
+   {
+    "iden": 9,
+    "base_freq_hz": 769006250,
+    "step_hz": 6250,
+    "offset_hz": 30000000,
+    "is_tdma": true,
+    "slots_per_carrier": 2
+   }
+  ],
+  "neighbors": [
+   {
+    "freq_hz": 771693750,
+    "rfss_id": 87,
+    "site_id": 87,
+    "sysid": null,
+    "wacn": null
+   },
+   {
+    "freq_hz": 771693750,
+    "rfss_id": 91,
+    "site_id": 91,
+    "sysid": null,
+    "wacn": null
+   },
+   {
+    "freq_hz": 772193750,
+    "rfss_id": 50,
+    "site_id": 50,
+    "sysid": null,
+    "wacn": null
+   },
+   {
+    "freq_hz": 855412500,
+    "rfss_id": 78,
+    "site_id": 78,
+    "sysid": null,
+    "wacn": null
+   },
+   {
+    "freq_hz": 856062500,
+    "rfss_id": 93,
+    "site_id": 93,
+    "sysid": null,
+    "wacn": null
+   },
+   {
+    "freq_hz": 856412500,
+    "rfss_id": 89,
+    "site_id": 89,
+    "sysid": null,
+    "wacn": null
+   },
+   {
+    "freq_hz": 856787500,
+    "rfss_id": 95,
+    "site_id": 95,
+    "sysid": null,
+    "wacn": null
+   },
+   {
+    "freq_hz": 857837500,
+    "rfss_id": 60,
+    "site_id": 60,
+    "sysid": null,
+    "wacn": null
+   }
+  ],
+  "secondary_cc": [
+   772706250,
+   773456250,
+   774656250
+  ]
+ }
+]

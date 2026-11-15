@@ -1,0 +1,28 @@
+[package]
+name = "p25-survey"
+description = "Scan a band for P25 control channels and log each site's identity, band plan and neighbours."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "p25-survey"
+path = "src/main.rs"
+
+[dependencies]
+survey-core = { path = "../survey-core" }
+survey-radio.workspace = true
+num-complex.workspace = true
+serde_json.workspace = true
+serde.workspace = true
+# RadioReference's SOAP API: HTTPS (rustls, no system TLS), XML, a password prompt.
+ureq = "3"
+roxmltree = "0.21"
+rpassword = "7"
+# Ctrl-C: finish the hop, write the reports.
+ctrlc = "3"
+
+[dev-dependencies]
+serde_json.workspace = true

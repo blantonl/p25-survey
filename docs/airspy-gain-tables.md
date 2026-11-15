@@ -1,14 +1,13 @@
 # Airspy gain preset tables
 
-`--gain N` for an Airspy maps to the gr-osmosdr `linearity` preset, which
-in turn calls `airspy_set_linearity_gain(N)` in libairspy. That function
-is a lookup into three pre-tuned tables (LNA, MIX, IF/VGA) — one entry
-per preset value 0–21.
+`--gain N` for an Airspy (or a HydraSDR, whose library grew from
+libairspy) calls `airspy_set_linearity_gain(N)`. That function is a lookup
+into three pre-tuned tables (LNA, MIX, IF/VGA), one entry per preset value
+0–21; `--sensitivity N` looks up the other preset's.
 
 This page snapshots those tables so you can predict what `--gain N`
-actually programs into the device, and so you can build an equivalent
-`--device-args` string for per-stage control (see "Per-stage control"
-below).
+actually programs into the device, and what to give `--lna`, `--mix` and
+`--if` for per-stage control (see "Per-stage control" below).
 
 > **Note — the source arrays appear backwards, but the API is not.**
 > - Preset **0** = LNA off, mixer off, IF/VGA at minimum (lowest gain).
@@ -56,8 +55,7 @@ preset for crowded bands like 700/800 MHz public-safety.
 
 Same 0–21 input range but tuned to maximize sensitivity at the cost of
 linearity. Useful for weak rural signals where IMD isn't the limiting
-factor. Select by passing `sensitivity=N` instead of `linearity=N`
-in `--device-args` — e.g. `--device-args "airspy=0,sensitivity=12"`.
+factor. Select it with `--sensitivity N` instead of `--gain N`.
 
 | Preset | LNA | MIX | IF/VGA |
 |-------:|----:|----:|-------:|
@@ -84,16 +82,17 @@ in `--device-args` — e.g. `--device-args "airspy=0,sensitivity=12"`.
 | 20     | 14  | 12  | 12     |
 | 21     | 14  | 12  | 13     |
 
-## Per-stage control via `--device-args`
+## Per-stage control: `--lna`, `--mix`, `--if`
 
-If neither preset gives you what you want, set the three stages directly.
-gr-osmosdr's airspy backend accepts these keys:
+If neither preset gives you what you want, set the three stages directly
+(the LNA and mixer AGC go off):
 
 ```
---device-args "airspy=0,LNA=10,MIX=15,IF=12"
+p25-survey scan --start 851 --stop 869 --lna 10 --mix 15 --if 12
 ```
 
-`--gain` is ignored when per-stage args are present. Use this when:
+A stage not given takes linearity 14's value (LNA 9, MIX 6, IF 10).
+`--gain` is ignored when any is given. Use this when:
 
 - You're chasing a specific BER curve and want finer granularity than 22
   preset rows.
@@ -102,10 +101,8 @@ gr-osmosdr's airspy backend accepts these keys:
 - A specific Airspy / antenna combination has a known sweet spot that
   doesn't map cleanly onto either preset's diagonal.
 
-`--list-gains` will print the LNA / MIX / IF ranges your gr-osmosdr
-build actually advertises for the connected device, which can differ
-from the 0–14 / 0–15 / 0–15 from `airspy_rx.c` if you're on an unusual
-build.
+`p25-survey gains` (or `scan --list-gains`) prints the radio's gain
+settings.
 
 ## Where these numbers come from
 
@@ -118,9 +115,10 @@ you suspect a tuning change has shipped.
 
 ## Related: how `--auto-gain` uses these
 
-The default gain sweep grid for Airspy is `[4, 8, 12, 16, 20]` (see
-`p25_survey/gain_sweep.py`). That spans the linearity preset from "very
-cold" (preset 4: LNA 0, MIX 1, IF 8) to "hot" (preset 20: LNA 14, MIX 12, 
-IF 12), which gives BER-vs-gain enough dynamic range to find
-the actual decoder sweet spot for your antenna and your local RF
-environment without burning dwell time on near-duplicate rows.
+The default gain sweep grid for an Airspy is 6, 9, 12, 15, 18 (linearity
+presets; `--gain-sweep` for another). That spans "cold" (preset 6: LNA 0,
+MIX 2, IF 10) to "hot" (preset 18: LNA 13, MIX 9, IF 11): below 6 little
+decodes, and above 18 a strong local signal tends to overload the front end
+and make copies of itself. The sweep scores each preset by the control
+messages each channel decodes there, against that channel's best, and
+advises the lowest within 2 % of the best.

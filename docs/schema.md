@@ -1,186 +1,132 @@
-# Survey JSON schema
+# Survey record schema
 
-The survey output is **NDJSON**: one JSON object per line, fsynced after
-each write. A scan that crashes mid-run leaves a valid file.
+A survey file is **NDJSON**: one JSON object per line, one per candidate a
+scan looked at (control channels, copies, other P25, and carriers that
+weren't P25). Each tuning's records are written, and synced to disk, as the
+tuning ends.
 
-`--output` truncates an existing file by default at scan startup; pass
-`--resume` to keep prior records and skip frequencies already present.
+`--output` truncates an existing file at the start; `--resume` keeps its
+records and surveys only what they don't cover.
 
-All fields default to `null`/empty when the source broadcast wasn't seen,
-and the reader tolerates missing keys, so survey files written by older
-versions load unchanged.
+The schema is the Python version's (0.4), so its tools read these records and
+`p25-survey report` reads its records. Fields that version doesn't have are at
+the top level of each record (it builds `neighbors`, `iden_up` and `signal`
+from exactly their keys). A field whose broadcast wasn't heard is `null` or
+empty, and readers take missing keys as such.
 
 ## Record
 
-| Field | Type | Notes |
+| Field | Type | |
 |---|---|---|
-| `freq_hz` | int | Detected control channel frequency in Hz. The record key for resume / dedup. |
-| `ts` | string | ISO 8601 UTC timestamp (millisecond precision) of detection completion. |
-| `complete` | bool | `true` if WACN, sysid, RFSS, site, and band plan were all collected before max_dwell. |
-| `wacn` | string \| null | 5-hex-char WACN (e.g. `"BEE00"`). |
-| `sysid` | string \| null | 3-hex-char System ID (e.g. `"1A4"`). |
-| `nac` | string \| null | 3-hex-char NAC (e.g. `"293"`). |
-| `rfss_id` | int \| null | RFSS ID from RFSS_STS_BCST. |
-| `site_id` | int \| null | Site ID from RFSS_STS_BCST. |
-| `site_network_active` | bool \| null | RFSS_STS_BCST "A" bit. `true` = active RFSS network connection; `false` = failsoft / site-trunking; `null` = not decoded. |
-| `site_lra` | int \| null | Location Registration Area (octet 2 of RFSS_STS / NET_STS_BCST). |
-| `services_available` | array of string | Trunking services this site currently offers, from the SYS_SRV_BCST "available" 24-bit bitmap, decoded to service names. Empty when not seen. |
-| `services_supported` | array of string | Services the site is equipped for, from the SYS_SRV_BCST "supported" bitmap. Empty when not seen. |
-| `utc_offset_min` | int \| null | Signed local-time offset in minutes from TIME_DATE_ANN (date/time themselves are dropped as transient). `null` when not seen or flagged invalid. |
-| `encryption_algid` | int \| null | Encryption algorithm ID from P_PARM_BCST. Its presence means the control channel itself is encrypted/protected. `null` when no P_PARM_BCST seen. |
-| `neighbors` | array | Adjacent sites — see below. |
-| `secondary_cc` | array of int | Resolved frequencies (Hz) advertised in SCCB (TSBK opcode 0x39) as alternate control channels for *this* site. Empty for the vast majority of sites — SCCB is uncommonly broadcast. Useful for re-acquisition on systems that rotate CCs; this is the *currently advertised* secondary, not a rotation schedule. |
-| `iden_up` | array | Channel-identifier (band plan) entries — see below. |
-| `signal` | object | Quality metrics. |
-| `dwell_ms` | int | Total ms spent decoding this candidate. |
-| `sdr_driver` | string | "rtlsdr" / "airspy" / "hackrf" / etc. |
-| `sdr_gain_db` | float \| null | RF gain used. |
-| `sdr_ppm` | float | Frequency correction. |
-| `notes` | array | Warnings (e.g. "neighbor at 0x1234 unresolvable: missing iden_up table 1"). |
-| `rr` | object \| null | RadioReference enrichment, populated only when `--rr` was used. See below. |
+| `freq_hz` | int | The channel. Where it was found, or where it announces it is, if that is within 12.5 kHz (`heard_hz` keeps the other). |
+| `ts` | string | ISO 8601 UTC, milliseconds: when the record was written. |
+| `complete` | bool | A control channel of its own whose identity, band plan and own channel were heard, every channel number it named resolved, and nothing new came for 3 s (or at the dwell's end, everything resolved). `false` for copies. |
+| `wacn` | string \| null | 5 hex digits (`"BEE00"`). |
+| `sysid` | string \| null | 3 hex digits (`"44A"`). |
+| `nac` | string \| null | 3 hex digits: the NAC most of its frames had. |
+| `rfss_id` | int \| null | |
+| `site_id` | int \| null | |
+| `site_network_active` | bool \| null | RFSS_STS_BCST's A bit: `false` is failsoft (site trunking). |
+| `site_lra` | int \| null | Location registration area. |
+| `services_available` | array of string | SYS_SRV_BCST: the services the site offers now, by name. |
+| `services_supported` | array of string | SYS_SRV_BCST: the services it is equipped for. |
+| `utc_offset_min` | int \| null | TIME_DATE_ANN: the local time's offset from UTC, minutes. |
+| `encryption_algid` | int \| null | P_PARM_BCST: the control channel is encrypted, with this algorithm. |
+| `neighbors` | array | Neighbouring sites (below). |
+| `secondary_cc` | array of int | The site's secondary control channels (SCCB, SCCB_EXP), Hz. |
+| `iden_up` | array | The band plan (below). |
+| `signal` | object | Below. |
+| `dwell_ms` | int | How long it was listened to. |
+| `sdr_driver` | string | `airspy`, `hydrasdr`, `rtlsdr`, `hackrf`, or `file` (a recording). |
+| `sdr_gain_db` | float \| null | The gain used, as `--gain` takes it (Airspy: the linearity preset). |
+| `sdr_ppm` | float | The correction applied (`--ppm`). |
+| `notes` | array of string | Copies, channel numbers that didn't resolve. |
+| `rr` | object \| null | With `--rr` (below). |
+
+Fields this version adds:
+
+| Field | Type | |
+|---|---|---|
+| `verdict` | string | `complete`, `partial` (a control channel the dwell ran out on), `p25-not-control` (voice, data, conventional), `not-p25`. |
+| `level_db` | float | Its steady power over the local noise floor in the look, dB. |
+| `heard_hz` | int | Where it was found. |
+| `announced_hz` | int \| null | The frequency its NET/RFSS_STS_BCST names for it. |
+| `copy_of_hz` | int \| null | Not a control channel of its own: a copy (image, intermodulation) of the one at this frequency. |
+| `tsbks` | int | TSBKs that passed their CRC. |
+| `carrier_offset_hz` | float | Where its carrier was against where it should be: the radio's frequency error there. |
+| `receivers` | object | `c4fm` and `cqpsk`: `frames`, `tsbk_ok`, `tsbk_bad` each. |
 
 ## `neighbors[]`
 
-| Field | Type | Notes |
+| Field | Type | |
 |---|---|---|
-| `freq_hz` | int | Resolved neighbor CC frequency. |
-| `rfss_id` | int | |
-| `site_id` | int | |
-| `sysid` | string \| null | Only set when source TSBK was TDMA explicit (0xfa-family). |
-| `wacn` | string \| null | Only set when source TSBK was TDMA extended explicit (0xfe). |
-| `conventional` | bool \| null | ADJ_STS_BCST "C" flag — neighbor is a conventional channel. `null` when not decoded (MBT/TDMA paths). |
-| `site_failure` | bool \| null | ADJ_STS_BCST "F" flag — neighbor site is in a failure condition. |
-| `valid` | bool \| null | ADJ_STS_BCST "V" flag — info is current; `false` = stale / last-known. |
-| `network_active` | bool \| null | ADJ_STS_BCST "A" flag — neighbor has an active RFSS network connection; `false` = neighbor failsoft. |
+| `freq_hz` | int | Its control channel, through the band plan. |
+| `rfss_id`, `site_id` | int | |
+| `sysid` | string \| null | |
+| `wacn` | string \| null | Only the TDMA extended form carries it. |
+| `conventional` | bool \| null | ADJ_STS_BCST's C bit: a conventional channel. `null` when not decoded (MBT, TDMA). |
+| `site_failure` | bool \| null | F: the neighbour is in a failure condition. |
+| `valid` | bool \| null | V: current (`false`: last known). |
+| `network_active` | bool \| null | A: an active network connection (`false`: failsoft). |
 
 ## `iden_up[]`
 
-| Field | Type | Notes |
+| Field | Type | |
 |---|---|---|
-| `iden` | int | Channel-identifier table number (0–15). |
-| `base_freq_hz` | int | Channel 0 downlink frequency. |
-| `step_hz` | int | Channel-to-channel spacing. |
-| `offset_hz` | int | Signed mobile-uplink offset. |
-| `is_tdma` | bool | `true` only when `slots_per_carrier > 1`. An all-FDMA band plan advertised via IDEN_UP_TDMA stays `false`. |
-| `slots_per_carrier` | int | 1 (FDMA), 2 (Phase 2), or 4. |
-| `bandwidth_hz` | int \| null | Receiver bandwidth from the IDEN_UP_VU "BW VU" field (6250 or 12500 Hz), distinct from channel spacing. `null` for non-VU band plans. |
+| `iden` | int | The table (0-15). |
+| `base_freq_hz` | int | Channel 0's downlink. |
+| `step_hz` | int | Channel spacing. |
+| `offset_hz` | int | Uplink minus downlink. |
+| `is_tdma` | bool | Two or more slots a carrier (a 1-slot IDEN_UP_TDMA entry is FDMA). |
+| `slots_per_carrier` | int | 1, 2 or 4. |
+| `bandwidth_hz` | int \| null | IDEN_UP_VU's channel bandwidth (6250 or 12500). |
 
 ## `signal`
 
-| Field | Type | Notes |
+| Field | Type | |
 |---|---|---|
-| `rssi_dbfs_mean` | float \| null | Mean during dwell. Sampled from raw IQ via gnuradio `probe_signal_f` block, so populated for every record (including no-cc). |
-| `rssi_dbfs_peak` | float \| null | Peak during dwell. |
-| `ber_pct_mean` | float \| null | Block error rate proxy from op25 `frame_assembler.control('{"cmd":"fec_stats"}')`. Computed as `(tsbk_attempted - tsbk_crc_passed) / tsbk_attempted * 100`. Null when no TSBKs were attempted (decoder never locked). |
-| `decode_rate_pct` | float \| null | Successfully-decoded TSBK fraction. Complement of `ber_pct_mean`. |
+| `rssi_dbfs_mean`, `rssi_dbfs_peak` | null | The Python version's; this version gives `level_db` instead. |
+| `decode_rate_pct` | float \| null | TSBKs that passed their CRC, of those attempted, by the better receiver. |
+| `ber_pct_mean` | float \| null | 100 − `decode_rate_pct` (the Python version's name for it). |
 
-## `rr` (RadioReference enrichment)
+## `rr`
 
-Present only when `--rr` was used and the decoder produced enough data to
-look up. Generated by `p25_survey.enrich.enrich_record()`.
+As the Python version's enrichment record, field for field.
 
-| Field | Type | Notes |
+| Field | Type | |
 |---|---|---|
-| `system_match` | bool | True if RR has the WACN+SYSID. |
-| `site_match` | bool | True if RR has the RFSS+SiteNumber for that system. |
-| `rr_system_name` | string \| null | RR's `sName` for the system. |
-| `rr_sid` | int \| null | RR's internal system primary-key. |
-| `rr_site_description` | string \| null | RR's `siteDescr`. |
-| `rr_site_location` | string \| null | RR's `siteLocation`. |
-| `rr_site_county` | string \| null | RR's `siteCt`. |
-| `rr_site_lat` | float \| null | Site latitude in decimal degrees. |
-| `rr_site_lon` | float \| null | Site longitude in decimal degrees. |
-| `rr_site_licenses` | array of string | FCC callsigns from `siteLicenses`. |
-| `cc_freq_offset` | object \| null | Frequency comparison; see below. |
-| `cc_freq_in_db` | bool | True if decoded frequency matches an RR-listed CC within 1 kHz. |
-| `observed_neighbors` | array of `NeighborRef` | Every neighbor seen in ADJ_STS_BCST, annotated with RR site context (description / location / county) when the (RFSS, Site) ID resolves in the roster. `in_rr=False` entries are new-site candidates. |
-| `neighbors_decoded_not_in_rr` | array of `NeighborRef` | Subset of `observed_neighbors` with `in_rr=False`. Strong submission candidates. |
-| `neighbor_cc_mismatches` | array of `NeighborCCMismatch` | Per-neighbor CC verification: advertised CC freq either missing from the neighbor site's RR frequency list (`kind="missing_from_rr"`) or listed but not flagged as a control channel (`kind="not_marked_control"`). |
-| `notes` | array of string | Per-record notes (lookup failures, partial-record skips). |
+| `system_match` | bool | RR has the WACN and System ID. |
+| `site_match` | bool | RR has the RFSS and site for that system (several subsystems sharing numbers: the NAC chooses). |
+| `ambiguous_site` | bool | It can't be told which (see `notes`). |
+| `rr_system_name`, `rr_sid` | string, int | |
+| `rr_site_description`, `rr_site_location`, `rr_site_county`, `rr_site_nac` | string \| null | |
+| `rr_site_lat`, `rr_site_lon` | float \| null | |
+| `rr_site_licenses` | array of string | FCC call signs. |
+| `cc_freq_offset` | object \| null | `decoded_hz`, `expected_hz` (the nearest control channel RR lists for the site), `offset_hz`, `ppm`. |
+| `cc_freq_in_db` | bool | The control channel is listed (within 1 kHz). |
+| `observed_neighbors` | array | Each neighbour: `rfss_id`, `site_id`, `freq_hz`, `in_rr`, and RR's `description`, `location`, `county`. |
+| `neighbors_decoded_not_in_rr` | array | Those not in RR's roster: new-site candidates. |
+| `neighbor_cc_mismatches` | array | Neighbours whose announced control channel RR doesn't list for them (`kind` `missing_from_rr`) or lists but not as control (`not_marked_control`, with `rr_use_code`): `rfss_id`, `site_id`, `advertised_cc_hz`, `kind`, `rr_use_code`, `rr_site_description`. |
+| `secondary_cc_mismatches` | array | The same for the site's own secondary control channels: `freq_hz`, `kind`, `rr_use_code`. |
+| `notes` | array of string | New system, new site, lookups that failed, a WACN taken from the survey's other control channels. |
 
-### `cc_freq_offset` sub-object
-
-| Field | Type | Notes |
-|---|---|---|
-| `decoded_hz` | int | The frequency we tuned to and decoded. |
-| `expected_hz` | int | The closest CC frequency RR lists for the matched site. |
-| `offset_hz` | int | `decoded_hz - expected_hz`. Sign tells you direction. |
-| `ppm` | float | Same offset expressed as PPM. Useful as a `--ppm` calibration source. |
-
-### `NeighborRef` sub-object
-
-| Field | Type | Notes |
-|---|---|---|
-| `rfss_id` | int | P25 RFSS ID. |
-| `site_id` | int | P25 Site Number. |
-| `freq_hz` | int \| null | Advertised CC frequency from ADJ_STS_BCST. |
-| `in_rr` | bool | True if (RFSS, Site) resolves to a site in RR's roster. |
-| `description` | string \| null | RR site description (when `in_rr`). |
-| `location` | string \| null | RR site location (when `in_rr`). |
-| `county` | string \| null | RR site county (when `in_rr`). |
-
-### `NeighborCCMismatch` sub-object
-
-| Field | Type | Notes |
-|---|---|---|
-| `rfss_id` | int | P25 RFSS ID of the neighbor. |
-| `site_id` | int | P25 Site Number of the neighbor. |
-| `advertised_cc_hz` | int | CC freq advertised in ADJ_STS_BCST. |
-| `kind` | string | `"missing_from_rr"` or `"not_marked_control"`. |
-| `rr_use_code` | string \| null | The site's `use` code for this freq, when `kind="not_marked_control"` (typically `""`). |
-| `rr_site_description` | string \| null | RR description of the neighbor site, for context. |
-
-## Example record (with `--rr` enrichment)
+## Example (illustrative)
 
 ```json
-{
-  "complete": true,
-  "dwell_ms": 4028,
-  "freq_hz": 769781250,
-  "iden_up": [
-    {"iden": 0, "base_freq_hz": 851006250, "step_hz": 6250,
-     "offset_hz": -45000000, "is_tdma": false, "slots_per_carrier": 1}
-  ],
-  "nac": "370",
-  "neighbors": [],
-  "notes": [],
-  "rfss_id": 1,
-  "rr": {
-    "system_match": true,
-    "site_match": true,
-    "rr_system_name": "Dallas P25 / NCTCOG",
-    "rr_sid": 6549,
-    "rr_site_description": "NCTCOG Dallas",
-    "rr_site_location": "Dallas",
-    "rr_site_county": "Dallas",
-    "rr_site_lat": 32.78,
-    "rr_site_lon": -96.79,
-    "rr_site_licenses": ["WPRR123"],
-    "cc_freq_offset": {
-      "decoded_hz": 769781250,
-      "expected_hz": 769781250,
-      "offset_hz": 0,
-      "ppm": 0.0
-    },
-    "cc_freq_in_db": true,
-    "observed_neighbors": [
-      {"rfss_id": 1, "site_id": 14, "freq_hz": 770068750, "in_rr": true,
-       "description": "South Tower", "location": "Dallas", "county": "Dallas"},
-      {"rfss_id": 1, "site_id": 19, "freq_hz": 771368750, "in_rr": true,
-       "description": "Airport", "location": "Dallas", "county": "Dallas"}
-    ],
-    "neighbors_decoded_not_in_rr": [],
-    "neighbor_cc_mismatches": [],
-    "notes": []
-  },
-  "sdr_driver": "airspy",
-  "sdr_gain_db": 14.0,
-  "sdr_ppm": 0.0,
-  "signal": {"ber_pct_mean": 0.0, "decode_rate_pct": 100.0,
-             "rssi_dbfs_mean": -16.0, "rssi_dbfs_peak": -14.7},
-  "site_id": 20,
-  "sysid": "378",
-  "ts": "2026-04-25T16:47:06.594+00:00",
-  "wacn": "BEE00"
-}
+{"freq_hz":855062500,"ts":"2026-11-15T19:57:27.268+00:00","complete":true,
+ "wacn":"DEE00","sysid":"911","nac":"910","rfss_id":1,"site_id":64,
+ "site_network_active":true,"site_lra":0,"services_available":[],"services_supported":[],
+ "utc_offset_min":null,"encryption_algid":null,
+ "neighbors":[{"freq_hz":150830000,"rfss_id":1,"site_id":40,"sysid":"911","wacn":null,
+   "conventional":null,"site_failure":null,"valid":null,"network_active":null}],
+ "secondary_cc":[860012500],
+ "iden_up":[{"iden":0,"base_freq_hz":851006250,"step_hz":6250,"offset_hz":-45000000,
+   "is_tdma":false,"slots_per_carrier":1,"bandwidth_hz":null}],
+ "signal":{"rssi_dbfs_mean":null,"rssi_dbfs_peak":null,"ber_pct_mean":0.0,"decode_rate_pct":100.0},
+ "dwell_ms":3802,"sdr_driver":"airspy","sdr_gain_db":14.0,"sdr_ppm":0.0,"notes":[],
+ "verdict":"complete","level_db":47.5,"heard_hz":855062500,"announced_hz":855062500,
+ "copy_of_hz":null,"tsbks":540,"carrier_offset_hz":766.0,
+ "receivers":{"c4fm":{"frames":172,"tsbk_ok":540,"tsbk_bad":0},"cqpsk":{"frames":172,"tsbk_ok":538,"tsbk_bad":2}}}
 ```
+
+(`iden_up` cut to one entry; with `--rr` an `rr` object follows.)

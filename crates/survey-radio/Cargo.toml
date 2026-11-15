@@ -1,0 +1,14 @@
+[package]
+name = "survey-radio"
+description = "Sample sources for p25-survey: SDRs and SigMF recordings."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+num-complex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+libloading = "0.8"

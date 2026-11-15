@@ -1,277 +1,279 @@
-# P25 Survey Tool
+# P25 Survey
 
-Scan a frequency range with an SDR (RTL-SDR / Airspy / HackRF), identify P25
-control channels, and log per-system metadata. Optionally cross-reference
-findings against [RadioReference](https://www.radioreference.com/) and
-auto-tune SDR gain via BER feedback.
+Scan a frequency range with an SDR (Airspy, HydraSDR, RTL-SDR or HackRF),
+find the P25 control channels, and log what each one says about its site.
+Cross-reference the findings against [RadioReference](https://www.radioreference.com/)
+and report what RadioReference doesn't have yet.
 
-For each control channel found, records:
+For each control channel found, it records:
 
-- **Identity**: WACN, System ID, NAC, RFSS ID, Site ID, LRA (Location Registration Area)
-- **Channel**: control channel frequency, full IDEN_UP band plan (FDMA + TDMA, with
-  VHF/UHF receiver bandwidth). A channel is only flagged TDMA when it carries ≥2
-  slots/carrier, so an all-FDMA band plan advertised via IDEN_UP_TDMA isn't mislabeled.
-- **Topology**: neighbor sites with frequencies (resolved through the band plan), plus
-  per-neighbor status flags (conventional channel, site in failure, stale/last-known,
-  failsoft). Status broadcasts are decoded from both single-block TSBKs and FDMA
-  multi-block trunking (MBT) PDUs, so neighbors are recovered on VHF/UHF systems
-  that advertise them as MBT.
-- **Secondary CCs**: any alternate control channels advertised via SCCB (TSBK opcode 0x39).
-  Captured opportunistically — most sites never transmit SCCB, so this is usually empty.
-  When present, it lists the site's *currently advertised* secondary CC(s); it is not a rotation schedule.
-- **Site status**: failsoft flag (no active RFSS network connection), control-channel
-  encryption flag (P_PARM_BCST present, with algid), advertised system services
-  (SYS_SRV_BCST), and the system's signed UTC offset (TIME_DATE_ANN).
-- **Signal quality**: RSSI (mean + peak, dBFS), BER, decode rate
-- **RR enrichment** (with `--rr`): system name, site description, frequency offset vs database, neighbor diff
+- **Identity**: WACN, System ID, NAC, RFSS and site, LRA
+- **Band plan**: every IDEN_UP entry (FDMA and TDMA, spacing, offset, bandwidth)
+- **Topology**: neighbouring sites with their control channels (resolved through
+  the band plan) and status (failsoft, failure, conventional, stale)
+- **Secondary control channels** the site announces (SCCB)
+- **Services and status**: the site's services (SYS_SRV_BCST), failsoft, UTC offset,
+  an encrypted control channel (P_PARM_BCST)
+- **Signal**: level over the noise floor, the share of control messages that
+  decoded, and the carrier's frequency error (the radio's clock error)
+- **RadioReference** (with `--rr`): system and site, whether the frequency,
+  NAC, secondary control channels and neighbours match what RR lists
 
-Outputs three files per scan: NDJSON survey, plain-text human-readable report,
-and a Markdown submission report listing data not yet in RadioReference.
+It also tells apart what isn't a control channel of its own: voice and
+conventional P25, other signals, and **copies** of a strong control channel
+(the radio's image, intermodulation), which would otherwise look like sites.
 
-![Live scan of 851–866 MHz with RR enrichment](docs/images/live-scan-800mhz.png)
+Each scan writes three files: the records (NDJSON), a text report, and, with
+`--rr`, a Markdown report of what to submit to RadioReference.
 
-The live console table updates per candidate as Phase 2 decodes; the `RR Match`
-column shows the matched RadioReference system + site (with frequency offset)
-or flags new sites / NAC mismatches as it goes.
+**0.5 is a rewrite in Rust**: one program, with no GNU Radio, op25 or Python
+to install, that runs on Linux (including the Raspberry Pi) and macOS
+(Windows should build, but is untried). It reads and writes the same survey files as the Python version
+(0.4.x, now on the [`python`](../../tree/python) branch); see
+[Coming from the Python version](#coming-from-the-python-version). It is
+tested on the air with an Airspy; the RTL-SDR, HackRF and HydraSDR drivers
+are tested on recorded samples but not yet on the radios
+([docs/hardware-testing.md](docs/hardware-testing.md)).
 
 ## Quick start
 
 ```bash
-# Scan 800 MHz P25 with an Airspy
-./p25-survey --start 851 --stop 869 --sdr airspy --gain 14 \
-    --output /tmp/survey-800.json
+# Scan 800 MHz with the first radio plugged in
+p25-survey scan --start 851 --stop 869
 
-# Scan 700 MHz public-safety downlink with RR enrichment
-./p25-survey --start 769 --stop 775 --sdr airspy --gain 14 \
-    --rr --hide-no-cc --output /tmp/survey-700.json
+# 700 MHz public-safety downlink, cross-referenced with RadioReference
+p25-survey scan --start 769 --stop 775 --rr --hide-no-cc --output survey-700.json
 
-# Find the best gain for your SDR/location/band
-./p25-survey --start 769 --stop 775 --sdr airspy --gain 14 \
-    --rr --auto-gain --output /tmp/survey-700.json
+# Find the best gain for your radio, antenna and band
+p25-survey scan --start 769 --stop 775 --auto-gain
 ```
 
-## Build
+## Install
 
-Single-file executable via `shiv`:
+There are no prebuilt binaries yet: build it with Rust (a few minutes).
 
-```bash
-make dev-deps     # one-time: install shiv + pytest + numpy/scipy for testing
-make              # produces ./p25-survey (~85 KB)
-make test         # 135 unit tests, no SDR or GNU Radio needed
-./p25-survey --help
-```
+1. **Rust**, from [rustup.rs](https://rustup.rs) (1.88 or newer), for your user
+   only:
+   ```bash
+   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+   ```
+   A C linker is needed too: on Debian/Ubuntu `sudo apt install build-essential`,
+   on macOS `xcode-select --install`.
+2. **The library for your radio**, and only that one. p25-survey loads it when
+   the radio is opened; nothing else needs it.
 
-The executable bundles the package only — `numpy`, `scipy`, `rich`, GNU Radio,
-and `gr-op25_repeater` come from the host's Python (this avoids ABI conflicts
-with GNU Radio's compiled C extensions).
+   | Radio | Debian / Ubuntu / Raspberry Pi OS | macOS (Homebrew) |
+   |---|---|---|
+   | Airspy R2, Mini | `sudo apt install libairspy0` | `brew install airspy` |
+   | HydraSDR RFOne | `sudo apt install libhydrasdr1` (or build [hydrasdr-host](https://github.com/hydrasdr/hydrasdr-host)) | build hydrasdr-host |
+   | RTL-SDR | `sudo apt install librtlsdr2` (older releases: `librtlsdr0`) | `brew install librtlsdr` |
+   | HackRF One | `sudo apt install libhackrf0` | `brew install hackrf` |
 
-## Software dependencies
+   On Linux a radio also needs its udev rules to be usable without root:
+   the radio's tools package installs them (`sudo apt install airspy`,
+   `rtl-sdr` or `hackrf`). An RTL-SDR also needs the kernel's DVB driver kept
+   off it (`blacklist dvb_usb_rtl28xxu`).
+3. **Build**:
+   ```bash
+   git clone https://github.com/blantonl/p25-survey
+   cd p25-survey
+   cargo build --release
+   ./target/release/p25-survey radios     # is the radio there?
+   ```
+   The program is `target/release/p25-survey`; copy it anywhere on your
+   `PATH`, or `cargo install --path crates/p25-survey`.
 
-On the host running the survey:
-
-- Python 3.10+
-- GNU Radio 3.10+
-- `gr-osmosdr` with the driver matching your SDR (RTL-SDR / Airspy / HackRF)
-- `gr-op25_repeater` from [boatbod/op25](https://github.com/boatbod/op25) `dev`
-  branch (or `master` once `dev` is merged forward). The two patches this tool
-  previously required — the audio-destructor guard and FEC stats — are now
-  upstream, so a stock build works.
-
-### Ubuntu 24.04 install recipe
-
-Runtime stack (GNU Radio + osmosdr + SDR drivers):
-
-```bash
-sudo apt-get update
-sudo apt-get install -y \
-    gnuradio gnuradio-dev \
-    gr-osmosdr libosmosdr-dev \
-    librtlsdr-dev libairspy-dev libhackrf-dev \
-    python3-pip python3-pybind11
-```
-
-Then build and install op25:
-
-```bash
-sudo apt-get install -y libcppunit-dev cmake build-essential pkg-config \
-    libsndfile1-dev libspdlog-dev
-git clone https://github.com/boatbod/op25.git
-cd op25 && git checkout dev
-mkdir build && cd build && cmake .. && make -j$(nproc) && \
-    sudo make install && sudo ldconfig
-```
-
-Pure unit tests (`make test`) don't need any of the above.
+**Raspberry Pi**: a Pi 4 or 5 with a 64-bit OS, the same steps; the first
+build takes a while there.
 
 ## How it works
 
-Three phases per scan:
+For each tuning of the radio across `--start` to `--stop`:
 
-1. **Energy scan** — sweep the SDR's center frequency in chunks of `0.8 ×
-   sample_rate`, FFT each capture, find spectral peaks above
-   `noise_floor + threshold_db`. Snap to the band's tuning grid. Output: a
-   list of candidate frequencies.
+1. **Look** (0.35 s): short FFTs over the look; for each channel on the band's
+   grid (6.25 kHz; 2.5 kHz on VHF), the 20th-percentile power against the local
+   noise floor. A control channel never keys down, so it stands out; voice
+   channels and bursts don't.
+2. **Decode** every candidate at once, from one FFT filter bank, each with a
+   C4FM and a CQPSK (simulcast) receiver. A candidate is done when its
+   identity, band plan and its own channel are in, every channel number it
+   named resolves and nothing new has come for 3 s; or when it isn't P25 (no
+   frame in 2 s), or isn't a control channel (no control frames); or at
+   `--max-dwell` (12 s).
+3. **Gain sweep** (with `--auto-gain`): the control channels found are decoded
+   again at each gain of a grid; the advice per band is the lowest gain within
+   2 % of the best.
 
-2. **P25 decode** — for each candidate, run op25's P25 demodulator + frame
-   assembler with adaptive dwell. Bail at `--confirm-timeout` (2 s default)
-   if no P25 broadcasts arrive. Otherwise dwell up to `--max-dwell` (12 s)
-   while collecting NET_STS_BCST, RFSS_STS_BCST, IDEN_UP*, ADJ_STS_BCST,
-   SCCB (secondary CC), and the additional TIA-102.AABC-B broadcasts
-   (SYS_SRV_BCST, TIME_DATE_ANN, P_PARM_BCST); resolve neighbor and
-   secondary-CC frequencies through the captured band plan. RFSS/NET/ADJ_STS
-   and P_PARM are decoded from FDMA MBT PDUs as well as single-block TSBKs.
+Copies are marked at the end of each tuning: a channel that announces
+another's frequency, has the same identity as a better one, or sits at the
+mirror image of a much stronger one with its NAC.
 
-3. **Optional gain sweep** (`--auto-gain`) — sweep 5 gain values × 4 s dwell
-   on each confirmed CC, measure BER per gain, recommend the gain that
-   minimizes block error rate. Per-band median across CCs becomes the
-   suggested `--gain` for re-running the scan.
+## Commands
 
-## CLI reference
+| Command | |
+|---|---|
+| `p25-survey scan [--radio R] --start MHz --stop MHz [options]` | Survey with a radio |
+| `p25-survey scan <recording>... [options]` | Survey SigMF recordings (each a tuning) |
+| `p25-survey report <survey.json> [--rr]` | The reports again from a survey file; `--rr` looks it up now |
+| `p25-survey radios` | The radios plugged in (and libraries that aren't installed) |
+| `p25-survey gains [--radio R]` | A radio's gain settings (also `scan --list-gains`) |
+| `p25-survey detect <recording>` | The carriers that stand out in a recording |
+| `p25-survey decode <recording> --freq MHz[,...]` | Decode given control channels from a recording |
+| `p25-survey info <recording>` | A recording's metadata and level |
+
+## Scan options
 
 ### Frequency sweep
 
-| Flag | Description |
+| Option | |
 |---|---|
-| `--start MHz` | Start frequency (e.g., `851.0`) |
-| `--stop MHz` | Stop frequency (e.g., `870.0`) |
-| `--step kHz` | Tuning grid(s). Defaults from the band table below; override for special cases. Accepts a comma-separated list (e.g. `5,6.25,7.5,12.5`) so VHF/UHF scans that mix channel spacings catch every CC — each detected peak snaps to whichever grid is nearest. One PSD per chunk, so capture cost is unchanged. |
+| `--start MHz`, `--stop MHz` | The range (with a radio; for recordings, their span by default) |
+| `--step kHz[,kHz...]` | The channel grid(s) to look on. By default the band's: 6.25 kHz, 2.5 kHz on VHF. Several (`5,6.25,7.5,12.5`) for VHF/UHF systems that mix spacings: each is looked on, and a channel found on more than one is kept once. |
 
-### SDR
+### Radio
 
-| Flag | Description |
+| Option | |
 |---|---|
-| `--sdr {rtlsdr,airspy,hackrf}` | Driver. Autoprobed if omitted. |
-| `--device-args ARGS` | Raw gr-osmosdr device args (e.g. `airspy=0,LNA=10,MIX=15,IF=12`). Lets you set per-stage gain or other driver-specific options. |
-| `--gain dB` | Sets the SDR's default gain stage (Airspy `linearity` preset 0–21, RTL-SDR tuner, HackRF IF/VGA). Omit for AGC. Use `--list-gains` to see the available range. For Airspy, see [`docs/airspy-gain-tables.md`](docs/airspy-gain-tables.md) for the full preset → LNA/MIX/IF lookup tables and per-stage control via `--device-args`. |
-| `--ppm PPM` | Frequency correction in PPM. |
-| `--list-gains` | Probe the SDR and print available gain stages, then exit. |
+| `--radio KIND[:SERIAL]` | `airspy`, `hydrasdr`, `rtlsdr` or `hackrf`, optionally one by serial (as `p25-survey radios` lists it). By default the first radio plugged in. |
+| `--rate MS/s` | The highest sample rate to use. Defaults: Airspy and HydraSDR their highest up to 10 (R2: 10, Mini: 6), RTL-SDR 2.4, HackRF 9.6. |
+| `--gain N` | Airspy, HydraSDR: linearity preset 0-21 (default 14). RTL-SDR: tuner gain in dB, the nearest it has (default: its AGC). HackRF: LNA gain 0-40 dB in 8 dB steps (default 16). `--gain auto`: the radio's AGC. |
+| `--sensitivity N` | Airspy, HydraSDR: the sensitivity preset 0-21 instead. |
+| `--lna N --mix N --if N` | Airspy, HydraSDR: each stage set, AGC off. See [docs/airspy-gain-tables.md](docs/airspy-gain-tables.md). |
+| `--vga N`, `--amp` | HackRF: baseband gain 0-62 dB (default 24); the 14 dB RF amplifier. |
+| `--ppm N` | The radio's frequency error, as the report gives it (e.g. `0.83`): every tuning is corrected by it. The receivers follow a few kHz of error regardless. |
+| `--list-gains` | Print the radio's gain settings and exit. |
 
-### Scan behavior
+### Scan behaviour
 
-| Flag | Default | Description |
+| Option | Default | |
 |---|---|---|
-| `--threshold dB` | 8 | Phase 1 energy margin above noise floor. **Lower → more candidates, weaker signals; higher → faster, only strong signals.** See "Tuning the threshold" below. |
-| `--confirm-timeout SECONDS` | 2 | Phase 2 abandon-fast: bail if no P25 broadcasts arrive in this window. |
-| `--max-dwell SECONDS` | 12 | Hard cap per candidate. Adaptive logic exits earlier when complete. |
-| `--hide-no-cc` | off | Hide no-cc rows from the live console table (still saved to JSON). |
+| `--threshold dB` | 4.5 | How far over the local noise floor a channel's steady power must be to be decoded. Lower: weaker channels, more candidates (each costs CPU, not time: they're decoded together). |
+| `--confirm-timeout S` | 2 | A candidate with no P25 frame by then isn't P25. |
+| `--max-dwell S` | 12 | The most a candidate is listened to. |
+| `--phase1-only` | | Only look: list each tuning's candidates, decode none. |
+| `--hide-no-cc` | | Leave what isn't a control channel out of the console (it's still in the files). |
 
-### RadioReference enrichment
+### RadioReference
 
-| Flag | Description |
+| Option | |
 |---|---|
-| `--rr` | Enable RR cross-reference. Prompts for username + password at startup (credentials never stored). The startup guard checks the premium-subscription expiry via getUserData — which renders the date as `MM-DD-YYYY` — and refuses an expired account up front. Each decoded CC is matched against the RR database; results inline-annotated in the TXT report; non-matching items written to `*-submissions.md`; per-band ppm offsets summarized at end. |
+| `--rr` | Look each control channel up in RadioReference (a Premium subscription). The login is asked for at the start of every run and never stored; an expired subscription is refused. The lookups run beside the scan. |
+| `--rr-stdin` | Read the username and password from the first two lines of standard input instead of asking (for scripts). |
 
-### Auto-gain (BER-driven sweep)
+### Gain sweep
 
-| Flag | Description |
+| Option | |
 |---|---|
-| `--auto-gain` | After Phase 2 finishes, sweep gain values on each confirmed CC and print per-CC + per-band recommendations. After the summary, prompts to re-run the scan with the recommended gain. |
-| `--gain-sweep "4,8,12,16,20"` | Custom sweep grid. Defaults to driver-appropriate values. |
+| `--auto-gain` | After each tuning, decode its control channels again at each gain of the grid; print the advice per band, and offer to scan again at it. |
+| `--gain-sweep N,N,...` | The grid. Defaults: Airspy/HydraSDR 6,9,12,15,18; RTL-SDR 20,28,34,39,44,49.6; HackRF 0,8,16,24,32,40. |
 
 ### Output
 
-| Flag | Description |
+| Option | |
 |---|---|
-| `--output PATH` | NDJSON survey file. Default: `survey-YYYYMMDD-HHMMSS.json`. **Truncates the file by default**; use `--resume` to append. |
-| `--resume` | Append to an existing `--output`; skip frequencies already in the file. |
-| `--phase1-only` | Run only Phase 1 (spectrum survey). Skip P25 decode. |
-| `--verbose` | Verbose logging. |
+| `--output PATH` | The survey file (NDJSON). Default `survey-YYYYMMDD-HHMMSS.json` (UTC). Truncated at the start, unless `--resume`. |
+| `--resume` | Keep the records already in `--output` and survey only what they don't cover (partial control channels get another chance). |
 
 ## Output files
 
-For `--output /tmp/survey.json`, you get three files:
+For `--output survey.json`:
 
-| File | Format | Contents |
+| File | |
+|---|---|
+| `survey.json` | NDJSON, one record per candidate (control channels, copies, other P25, and the rest). Written and synced to disk as each tuning ends, so a crash loses at most the one under way. Schema: [docs/schema.md](docs/schema.md). |
+| `survey.txt` | The report: the radio's clock error, every control channel with its band plan, neighbours, secondary control channels and RR match, then the copies, other P25 and the rest. |
+| `survey-submissions.md` | With `--rr`: new systems, new sites, frequency and NAC mismatches, secondary and neighbour control channels RR doesn't list (or lists as traffic), neighbours missing from RR's roster. To paste into a forum thread or a ticket. |
+
+## Bands (US)
+
+| Band | Range | Grid |
 |---|---|---|
-| `/tmp/survey.json` | NDJSON | One record per characterized frequency (CCs and no-cc candidates). Survives crashes (per-record fsync); resumable. |
-| `/tmp/survey.txt` | Plain text | Human-readable report grouped by control channel, with full band plan, neighbor table, RR annotations, and a Non-CC candidates appendix. |
-| `/tmp/survey-submissions.md` | Markdown | Only with `--rr`. Lists items not in RadioReference: new systems, new sites, frequency mismatches, neighbor diffs. Designed to paste into a forum thread or RR support ticket. |
-
-NDJSON survey schema is documented in [`docs/schema.md`](docs/schema.md).
-
-## Tuning the threshold
-
-`--threshold N` is the **dB margin above the median noise floor** that an
-FFT bin must clear to be considered a candidate. The trade-off:
-
-| Value | Behavior | When to use |
-|---|---|---|
-| 6–10 | Sensitive — catches weak signals, more false positives | Hunting weak/distant CCs; rural VHF; willing to spend extra time on no-cc rows |
-| 12–16 | Balanced (default 14 in most examples) | First-pass surveys, most US-urban scenarios |
-| 18+ | Picky — only strong signals, fast scan | Quick re-scans; densely populated bands where you only care about local sites |
-
-Phase 2 has its own filter (`--confirm-timeout` abandons a candidate that
-produces no P25 broadcasts), so a low threshold mostly costs scan time, not
-final-report quality. Non-P25 noise gets filtered at the decode step
-regardless.
-
-## Tuning step defaults (US)
-
-Auto-selected from the start frequency. Override with `--step <kHz>`, or pass a
-comma-separated list of grids (e.g. `--step 6.25,7.5,12.5`) to cover a mixed-raster
-band in one pass.
-
-| Band | Range | Default step | Notes |
-|---|---|---|---|
-| VHF land mobile | 150–174 MHz | 7.5 kHz | Post-narrowband raster |
-| UHF land mobile | 380–512 MHz | 12.5 kHz | Post-narrowband |
-| 700 MHz PS narrowband downlink | 769–775 MHz | 6.25 kHz | base TX — **CCs broadcast here** |
-| 700 MHz PS narrowband uplink | 799–805 MHz | 6.25 kHz | mobile TX |
-| 800 MHz PS rebanded | 851–869 MHz | 12.5 kHz | base TX — **CCs broadcast here** |
-| 900 MHz SMR downlink | 935–940 MHz | 12.5 kHz | base TX — **CCs broadcast here** |
-| 900 MHz SMR uplink | 896–901 MHz | 12.5 kHz | mobile TX |
-
-## Examples by band
+| VHF high | 136–174 MHz | 2.5 kHz |
+| UHF | 380–512 MHz | 6.25 kHz |
+| 700 MHz public safety, downlink (control channels) | 769–775 MHz | 6.25 kHz |
+| 800 MHz public safety, rebanded (control channels) | 851–869 MHz | 6.25 kHz |
+| 900 MHz SMR, downlink | 935–940 MHz | 6.25 kHz |
 
 ```bash
-# Texas 800 MHz statewide PS (TXWARN, regional systems, etc.)
-./p25-survey --start 851 --stop 869 --sdr airspy --gain 14 \
-    --threshold 14 --rr --hide-no-cc --output /tmp/survey-800.json
-
-# 700 MHz PS narrowband downlink (DART, NCTCOG, etc. for DFW area)
-./p25-survey --start 769 --stop 775 --sdr airspy --gain 14 \
-    --threshold 14 --rr --hide-no-cc --output /tmp/survey-700.json
-
-# 900 MHz SMR — business/industrial trunked; sparse in realigned markets
-./p25-survey --start 935 --stop 940 --sdr airspy --gain 14 \
-    --threshold 12 --rr --hide-no-cc --output /tmp/survey-900.json
-
-# VHF land mobile — be generous with threshold; lots of non-P25 noise
-./p25-survey --start 150 --stop 174 --sdr airspy --gain 14 \
-    --threshold 8 --rr --hide-no-cc --output /tmp/survey-vhf.json
-
-# UHF land mobile (federal, state, narrowbanded business)
-./p25-survey --start 380 --stop 512 --sdr airspy --gain 14 \
-    --threshold 12 --rr --hide-no-cc --output /tmp/survey-uhf.json
-
-# Calibrate gain for an unfamiliar SDR/location:
-./p25-survey --start 851 --stop 869 --sdr airspy --gain 14 \
-    --rr --auto-gain --output /tmp/cal.json
-# (At the end, accept the rescan prompt to validate the recommendation.)
+p25-survey scan --start 851 --stop 869 --rr --hide-no-cc --output survey-800.json
+p25-survey scan --start 769 --stop 775 --rr --hide-no-cc --output survey-700.json
+p25-survey scan --start 935 --stop 940 --rr --hide-no-cc --output survey-900.json
+p25-survey scan --start 150 --stop 174 --step 2.5,6.25,7.5 --rr --hide-no-cc --output survey-vhf.json
+p25-survey scan --start 450 --stop 470 --rr --hide-no-cc --output survey-uhf.json
 ```
 
-## Interrupting a scan
+## Interrupting and resuming
 
-`Ctrl-C` exits gracefully. Records decoded up to that point are already on
-disk (per-record fsync). Resume with `--resume`:
+Ctrl-C finishes the tuning under way with what it has, waits for the
+RadioReference lookups and writes the reports; Ctrl-C again stops at once.
+`--resume` with the same `--output` carries on where it stopped.
+
+## The radio's clock
+
+The reports give the radio's frequency error, measured on the control
+channels' carriers (base stations are GPS-disciplined): `Radio clock: +0.83 ppm`.
+Pass it as `--ppm 0.83` to correct every tuning by it. It isn't needed to
+decode (the receivers follow a few kHz of error), but it puts the carriers
+where the band plan says they are.
+
+## Coming from the Python version
+
+The survey files are the same: the Python version's reports read this
+version's records, and `p25-survey report` reads the Python version's. Fields
+this version adds (verdict, level, copies, carrier offset) are at the top
+level of each record.
+
+| Python (0.4) | Rust (0.5) |
+|---|---|
+| `./p25-survey --start … --stop …` | `p25-survey scan --start … --stop …` |
+| `--sdr airspy` | `--radio airspy` (`--sdr` still works) |
+| `--device-args "airspy=0,LNA=10,MIX=15,IF=12"` | `--lna 10 --mix 15 --if 12` |
+| `--device-args "airspy=0,sensitivity=12"` | `--sensitivity 12` |
+| `--sample-rate 6` | `--rate 6` (`--sample-rate` still works) |
+| `--threshold 8` (over the median of one snapshot) | `--threshold 4.5` (over the local floor of the 20th-percentile power over 0.35 s) |
+| `--list-gains` | `--list-gains`, or `p25-survey gains` |
+| `--verbose` | (gone) |
+
+What else changed:
+
+- No GNU Radio, op25, gr-osmosdr or Python: one program and the radio's library.
+- Every candidate in a tuning is decoded at once, each with a C4FM and a CQPSK
+  receiver, so a band takes about as long as its tunings (800 MHz: four, about
+  30 seconds with an Airspy), and decodes more than op25 did, notably on weak
+  and simulcast sites.
+- Copies of a strong control channel are recognised as such.
+- The clock error comes from the carriers on the air, not from RR's frequencies.
+- The gain sweep counts control messages decoded, so it sees frames lost
+  altogether, not only those that fail their CRC.
+
+## Development
 
 ```bash
-# First attempt got Ctrl-C'd partway through:
-./p25-survey --start 851 --stop 869 --sdr airspy --rr \
-    --output /tmp/survey-800.json
-# ... ^C ...
-# Pick up where it left off:
-./p25-survey --start 851 --stop 869 --sdr airspy --rr \
-    --resume --output /tmp/survey-800.json
+cargo test            # unit tests; the corpus test runs if the recordings are in corpus/raw
+cargo clippy --all-targets -- -D warnings
+cargo fmt --check
 ```
 
-## Project docs
-
-- [`DECISIONS.md`](DECISIONS.md) — every architectural choice with rationale.
-- [`PLAN.md`](PLAN.md) — module layout, algorithms, milestones.
-- [`docs/schema.md`](docs/schema.md) — NDJSON survey record schema.
-- [`docs/airspy-gain-tables.md`](docs/airspy-gain-tables.md) — Airspy linearity/sensitivity preset → LNA/MIX/IF lookup tables, snapshot from libairspy.
+- [DECISIONS.md](DECISIONS.md): every design decision and why, with what the
+  corpus and live scans measured.
+- [corpus/README.md](corpus/README.md): the IQ recordings it's developed and
+  tested against, and op25's results on them.
+- [docs/schema.md](docs/schema.md): the survey record.
+- [docs/airspy-gain-tables.md](docs/airspy-gain-tables.md): what each Airspy
+  gain preset sets.
+- [docs/hardware-testing.md](docs/hardware-testing.md): trying a radio for the
+  first time.
+- [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
-GPL-3.0-or-later. Required because `gr-op25_repeater` is GPLv3.
+Copyright © 2026 RadioReference.com LLC.
+
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
+[MIT license](LICENSE-MIT), at your option.
+
+Unless you explicitly state otherwise, any contribution intentionally submitted
+for inclusion in this work by you, as defined in the Apache-2.0 license, shall
+be dual licensed as above, without any additional terms or conditions.
+
+Versions 0.4.x and earlier (Python, on the `python` branch) are GPL-3.0-or-later.

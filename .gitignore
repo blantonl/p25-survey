@@ -1,29 +1,19 @@
-# Build artifact (single-file shiv executable)
-/p25-survey
+# Build
+target/
 
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.egg-info/
-*.egg
-.pytest_cache/
-.ruff_cache/
-.mypy_cache/
+# Recordings and the op25 baseline's message logs (they carry unit IDs)
+*.sigmf-data
+/corpus/raw/
+/corpus/baseline/
 
-# Virtual envs
-.venv/
-venv/
-env/
-
-# Distribution
-build/
-dist/
-
-# Survey outputs (NDJSON + text reports — never commit live scan results)
+# Survey outputs (never commit live scan results)
 survey-*.json
 survey-*.txt
+survey-*.md
 *.ndjson
+
+# Python (corpus scripts)
+__pycache__/
 
 # Editor / OS
 .DS_Store
