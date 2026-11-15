@@ -5,13 +5,14 @@ program: no GNU Radio, no op25, no Python. Scan a band with an SDR, find the
 P25 control channels, and log each site's identity, band plan, neighbours and
 secondary control channels, cross-referenced against RadioReference.
 
-**Status: early.** It surveys a band with an Airspy, or recordings
+**Status: early.** It surveys a band with an Airspy, HydraSDR, RTL-SDR or
+HackRF (the last three not yet tried on the radio itself), or recordings
 (`p25-survey scan`): every control channel op25 finds on the
 [corpus](corpus/README.md), and more, with their identity, band plan,
 neighbours and secondary control channels; copies (images,
 intermodulation) marked; gain advice per band (`--auto-gain`); the radio's
 clock error; RadioReference cross-reference (`--rr`) with the text and
-submissions reports. Not yet: RTL-SDR and HackRF.
+submissions reports.
 
 ## Run
 
@@ -27,8 +28,14 @@ p25-survey report survey-800.json --rr      # look a saved survey up again
 `--rr` asks for a RadioReference login (a premium subscription) every run
 and never stores it.
 
-An Airspy needs libairspy (`apt install libairspy0`, `brew install airspy`);
-nothing else does.
+Each radio needs its maker's library, and only that one:
+
+| `--radio` | Library | `--gain` |
+|---|---|---|
+| `airspy` | libairspy (`apt install libairspy0`, `brew install airspy`) | linearity preset 0-21 (14) |
+| `hydrasdr` | libhydrasdr (`apt install libhydrasdr1`) | linearity preset 0-21 (14) |
+| `rtlsdr` | librtlsdr (`apt install librtlsdr2`, `brew install librtlsdr`) | tuner dB (AGC) |
+| `hackrf` | libhackrf (`apt install libhackrf0`, `brew install hackrf`) | LNA dB 0-40 (16); `--vga`, `--amp` |
 
 ## Layout
 

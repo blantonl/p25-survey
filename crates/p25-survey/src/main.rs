@@ -21,8 +21,11 @@ const USAGE: &str = "usage:
   p25-survey info <recording>
   p25-survey decode <recording> --freq MHz[,MHz...] [--seconds S] [--json]
   p25-survey detect <recording> [--at S] [--look S] [--threshold dB] [--levels MHz,MHz]
-  p25-survey scan --radio airspy[:SERIAL] --start MHz --stop MHz [--gain 0-21|auto]
-                  [--sensitivity 0-21] [--rate MS/s] [scan options]
+  p25-survey scan --radio KIND[:SERIAL] --start MHz --stop MHz [--gain N|auto] [--rate MS/s]
+                  [scan options]
+      KIND: airspy, hydrasdr (--gain: linearity preset 0-21; --sensitivity 0-21)
+            rtlsdr (--gain: tuner dB; default AGC)
+            hackrf (--gain: LNA dB 0-40; --vga 0-62, default 24; --amp: the 14 dB amplifier)
   p25-survey scan <recording>... [--start MHz] [--stop MHz] [scan options]
       scan options: [--threshold dB] [--max-dwell S] [--output survey.json] [--hide-no-cc]
                     [--auto-gain [--gain-sweep 6,9,12,15,18]]  (a radio only)

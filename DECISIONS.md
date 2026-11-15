@@ -265,6 +265,35 @@ matched to its RR site and every frequency listed; to submit: NTIRN Grand
 Prairie (1-7) sends NAC 440 where RR has 447, and CTTRS Dallas announces a
 neighbour (1-99, 464.55 MHz) RR's roster doesn't have.
 
+## 2026-11-15 — RTL-SDR, HackRF and HydraSDR
+
+Each through its maker's library, loaded when that radio is opened (as
+libairspy): librtlsdr, libhackrf, libhydrasdr. A program that needs only
+the one in use, and builds with none.
+
+- HydraSDR (RFOne): libhydrasdr grew from libairspy, so the Airspy driver
+  takes the library's prefix; set_freq takes a uint64_t (1.0.2 and 1.1.x
+  alike). Its rates (10, 5, 2.5 MS/s) aren't a whole number of P25 samples
+  per symbol after any decimation, so the channelizer takes the nearest
+  within 1 % (10 MS/s / 208: 10.016 a symbol); the framer, timing each
+  frame from its sync, doesn't mind.
+- RTL-SDR: librtlsdr's async read blocks, so it runs on a thread of ours;
+  2.4 MS/s, unsigned 8-bit; `--gain` is the tuner's dB (nearest it has),
+  AGC by default.
+- HackRF: 9.6 MS/s (a whole number of samples per symbol), signed 8-bit,
+  baseband filter at 75 % of the rate; `--gain` is the LNA (0-40 dB, 8 dB
+  steps), `--vga` the baseband gain (24 by default), `--amp` the 14 dB
+  amplifier.
+- RTL-SDR and HackRF leak their LO as a spike at the centre: a one-pole DC
+  blocker (a notch a few hertz wide) takes it off, and live tunings are
+  half a raster step off a channel, so none sits on what's left.
+- Each radio says what `--gain N` means on it and what a sweep tries.
+
+Tested at each one's rate with the corpus resampled (2.4 MS/s quantised to
+8 bits, 9.6 and 10 MS/s): the same TSBKs as at 6 MS/s, within one. The
+drivers themselves have not run against their radios yet (dragon1 has an
+Airspy only).
+
 ## 2026-11-15 — License
 
 GPL-3.0-or-later, as the Python version. That was required there by op25;

@@ -38,17 +38,32 @@ fn stages(mut total: usize) -> Option<Vec<usize>> {
     (total == 1).then_some(f)
 }
 
-/// The channel rate for wideband samples at `rate_hz`: 4800 × (10 down to
-/// 5) samples a second, the first that divides it; and the decimation.
+/// The channel rate for wideband samples at `rate_hz`, and the decimation
+/// to it: 4800 × (10 down to 5) samples a second if one divides the rate;
+/// otherwise the decimation whose rate is nearest a whole number of samples
+/// per symbol (within 1 %: 10 MS/s ÷ 208 is 10.016 a symbol), which the
+/// framer, timing every symbol from its frame sync, takes as it is.
 pub(crate) fn decimation(rate_hz: f64) -> Result<(f64, usize), String> {
-    (5..=10)
-        .rev()
-        .find_map(|sps| {
-            let out = SYMBOL_RATE * sps as f64;
-            let d = rate_hz / out;
-            (d.fract() == 0.0 && d >= 1.0).then_some((out, d as usize))
+    let exact = (5..=10).rev().find_map(|sps| {
+        let out = SYMBOL_RATE * sps as f64;
+        let d = rate_hz / out;
+        (d.fract() == 0.0 && d >= 1.0).then_some((out, d as usize))
+    });
+    if let Some(e) = exact {
+        return Ok(e);
+    }
+    let lo = (rate_hz / (SYMBOL_RATE * 10.5)).ceil().max(1.0) as usize;
+    let hi = (rate_hz / (SYMBOL_RATE * 4.5)).floor() as usize;
+    (lo..=hi)
+        .map(|d| {
+            let sps = rate_hz / d as f64 / SYMBOL_RATE;
+            (d, sps, (sps - sps.round()).abs() / sps)
         })
-        .ok_or_else(|| format!("no decimation from {rate_hz} S/s to a whole number of samples per symbol"))
+        .filter(|&(_, _, off)| off <= 0.01)
+        // The most samples a symbol (finer timing), then the nearest whole.
+        .min_by(|a, b| b.1.round().total_cmp(&a.1.round()).then(a.2.total_cmp(&b.2)))
+        .map(|(d, _, _)| (rate_hz / d as f64, d))
+        .ok_or_else(|| format!("no decimation from {rate_hz} S/s to about a whole number of samples per symbol"))
 }
 
 /// The channel filter proper, at the channel rate.
@@ -129,6 +144,10 @@ mod tests {
         assert_eq!(Channel::new(6e6, 0.0).unwrap().output_rate(), 48_000.0);
         assert_eq!(Channel::new(2.4e6, 0.0).unwrap().output_rate(), 48_000.0);
         assert_eq!(Channel::new(3e6, 0.0).unwrap().output_rate(), 24_000.0);
+        // Not a whole number: the nearest (10 MS/s ÷ 208 = 48 077 S/s, 10.016 a symbol).
+        assert_eq!(decimation(10e6).unwrap().1, 208);
+        assert_eq!(decimation(2.5e6).unwrap().1, 52);
+        // 2.048 MS/s ÷ 43 is near enough, but 43 isn't in stages for Channel.
         assert!(Channel::new(2.048e6, 0.0).is_err());
     }
 

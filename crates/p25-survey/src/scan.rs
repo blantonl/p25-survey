@@ -10,10 +10,10 @@ use std::io::{BufWriter, Write};
 use std::time::{Duration, Instant};
 
 use num_complex::Complex32;
+use survey_core::dsp::detect::raster_hz;
 use survey_core::survey::{Command, GainSweep, Output, Record, Survey, SurveyConfig, Verdict, best_gain, gain_scores, mark_copies};
-use survey_radio::airspy::Airspy;
 use survey_radio::sigmf::{Reader, Recording};
-use survey_radio::{Gain, Radio};
+use survey_radio::{Gain, Options, Radio};
 
 use crate::record::{to_json, verdict_str};
 use crate::rows::Row;
@@ -42,7 +42,15 @@ impl Source {
     fn name(&self) -> &'static str {
         match self {
             Source::Recordings { .. } => "file",
-            Source::Radio(_) => "airspy",
+            Source::Radio(r) => r.kind(),
+        }
+    }
+
+    /// A sweep's gain on this radio.
+    fn gain_from(&self, g: f32) -> Gain {
+        match self {
+            Source::Recordings { .. } => Gain::Db(g),
+            Source::Radio(r) => r.gain_from(g),
         }
     }
 
@@ -84,16 +92,22 @@ impl Source {
     }
 }
 
-/// `--gain`: Airspy linearity preset 0-21 (or `auto`); `--sensitivity N`
-/// for the sensitivity presets instead.
-fn gain(rest: &[String]) -> Result<Gain, String> {
+/// The gain asked for: `--gain N` as the radio takes it (Airspy and
+/// HydraSDR: linearity preset 0-21; RTL-SDR: tuner dB; HackRF: LNA dB 0-40),
+/// `--gain auto`, or `--sensitivity N` (Airspy, HydraSDR). Otherwise the
+/// radio's default: linearity 14, the RTL-SDR's AGC, HackRF LNA 16 dB.
+fn gain(rest: &[String], radio: &dyn Radio) -> Result<Gain, String> {
     if let Some(s) = crate::opt(rest, "--sensitivity") {
         return s.parse().map(Gain::Sensitivity).map_err(|_| "--sensitivity: 0-21".into());
     }
     match crate::opt(rest, "--gain") {
-        None => Ok(Gain::Linearity(14)),
         Some("auto") => Ok(Gain::Auto),
-        Some(g) => g.parse().map(Gain::Linearity).map_err(|_| "--gain: 0-21 (Airspy linearity preset) or auto".into()),
+        Some(g) => g.parse::<f32>().map(|g| radio.gain_from(g)).map_err(|_| "--gain: a number, or auto".into()),
+        None => Ok(match radio.kind() {
+            "rtlsdr" => Gain::Auto,
+            "hackrf" => Gain::Db(16.0),
+            _ => Gain::Linearity(14),
+        }),
     }
 }
 
@@ -101,19 +115,17 @@ fn gain(rest: &[String]) -> Result<Gain, String> {
 fn gain_number(source: &Source, g: Gain) -> Option<f64> {
     match (source, g) {
         (Source::Radio(_), Gain::Linearity(v) | Gain::Sensitivity(v)) => Some(v as f64),
+        (Source::Radio(_), Gain::Db(d)) => Some(d as f64),
         _ => None,
     }
 }
 
-/// `--radio airspy` or `airspy:SERIAL` (hex, as `p25-survey radios` lists).
+/// `--radio KIND[:SERIAL]`: airspy, hydrasdr, rtlsdr, hackrf.
 fn open_radio(spec: &str, rest: &[String]) -> Result<Box<dyn Radio>, String> {
-    let (kind, serial) = spec.split_once(':').map_or((spec, None), |(k, s)| (k, Some(s)));
-    let serial = serial.map(|s| u64::from_str_radix(s.trim_start_matches("0x"), 16).map_err(|_| format!("--radio: serial {s}?"))).transpose()?;
-    let max_rate = crate::opt(rest, "--rate").map_or(Ok(6e6), |r| r.parse::<f64>().map(|m| m * 1e6).map_err(|_| "--rate: MS/s".to_string()))?;
-    match kind {
-        "airspy" => Ok(Box::new(Airspy::open(serial, max_rate, gain(rest)?).map_err(|e| e.to_string())?)),
-        _ => Err(format!("--radio: {kind}? (airspy)")),
-    }
+    let max_rate_hz = crate::opt(rest, "--rate").map(|r| r.parse::<f64>().map(|m| m * 1e6).map_err(|_| "--rate: MS/s".to_string())).transpose()?;
+    let vga_db = crate::opt(rest, "--vga").map(|v| v.parse::<u32>().map_err(|_| "--vga: 0-62 dB".to_string())).transpose()?;
+    let opts = Options { max_rate_hz, vga_db, amp: rest.iter().any(|a| a == "--amp") };
+    survey_radio::open(spec, &opts).map_err(|e| e.to_string())
 }
 
 pub fn scan(args: &[String]) -> Result<(), String> {
@@ -150,21 +162,36 @@ pub fn scan(args: &[String]) -> Result<(), String> {
         // A live radio's queue and USB transfers still hold the old frequency.
         None => cfg.settle_s = 0.25,
     }
+    if let Source::Radio(r) = &source
+        && r.dc_spike()
+    {
+        // Half a raster step off: no channel sits on the radio's DC spike.
+        for c in cfg.hops.iter_mut() {
+            *c += raster_hz(*c) / 2.0;
+        }
+    }
     if let Some(t) = num("--threshold")? {
         cfg.detect.threshold_db = t;
     }
     if let Some(t) = num("--max-dwell")? {
         cfg.max_dwell_s = t;
     }
-    let user_gain = gain(rest)?;
+    let user_gain = match &mut source {
+        Source::Radio(r) => {
+            let g = gain(rest, r.as_ref())?;
+            r.set_gain(g).map_err(|e| e.to_string())?;
+            g
+        }
+        Source::Recordings { .. } => Gain::Auto,
+    };
     if rest.iter().any(|a| a == "--auto-gain") {
         if matches!(source, Source::Recordings { .. }) {
             return Err("scan: --auto-gain needs a radio".into());
         }
-        cfg.gains = match crate::opt(rest, "--gain-sweep") {
-            Some(g) => g.split(',').map(|v| v.trim().parse::<f32>().map_err(|_| format!("--gain-sweep: {v}?"))).collect::<Result<_, _>>()?,
-            // Airspy linearity presets: the low end rarely decodes anything.
-            None => vec![6.0, 9.0, 12.0, 15.0, 18.0],
+        cfg.gains = match (crate::opt(rest, "--gain-sweep"), &source) {
+            (Some(g), _) => g.split(',').map(|v| v.trim().parse::<f32>().map_err(|_| format!("--gain-sweep: {v}?"))).collect::<Result<_, _>>()?,
+            (None, Source::Radio(r)) => r.sweep_gains(),
+            (None, Source::Recordings { .. }) => unreachable!(),
         };
         if cfg.gains.len() < 2 {
             return Err("--gain-sweep: at least two gains".into());
@@ -223,7 +250,7 @@ pub fn scan(args: &[String]) -> Result<(), String> {
         cfg.hops.len(),
         match &source {
             Source::Recordings { recs, .. } => format!("{} recording(s)", recs.len()),
-            Source::Radio(_) => "airspy".into(),
+            Source::Radio(r) => r.kind().into(),
         },
         rate / 1e6,
         cfg.detect.threshold_db
@@ -247,7 +274,8 @@ pub fn scan(args: &[String]) -> Result<(), String> {
                     survey.tuned(hz, &mut out);
                 }
                 Command::Gain(g) => {
-                    source.set_gain(g.map_or(user_gain, |g| Gain::Linearity(g.round().clamp(0.0, 21.0) as u8)))?;
+                    let g = g.map_or(user_gain, |g| source.gain_from(g));
+                    source.set_gain(g)?;
                     survey.gain_applied();
                 }
             }
@@ -313,6 +341,12 @@ pub fn scan(args: &[String]) -> Result<(), String> {
         Source::Radio(r) => r.dropped(),
         Source::Recordings { .. } => 0,
     };
+    let unit = match source.name() {
+        "airspy" | "hydrasdr" => "linearity preset",
+        "rtlsdr" => "tuner gain, dB",
+        "hackrf" => "LNA gain, dB",
+        _ => "gain",
+    };
     drop(source);
     let ccs: Vec<&Record> = records.iter().filter(|r| r.is_control()).collect();
     let copies = ccs.iter().filter(|r| r.copy_of.is_some()).count();
@@ -331,7 +365,7 @@ pub fn scan(args: &[String]) -> Result<(), String> {
         println!("{lost} samples lost ({:.2} % of the air): the computer didn't keep up.", 100.0 * lost as f64 / (air + lost) as f64);
     }
     if !sweeps.is_empty() {
-        print_bands(&sweeps);
+        print_bands(&sweeps, unit);
     }
     if let Some(c) = crate::report::clock(&rows) {
         println!("Radio clock: {:+.2} ppm ({} control channels, consistency {})", c.median_ppm, c.n, c.consistency);
@@ -398,10 +432,10 @@ fn print_sweep(sw: &GainSweep) {
 }
 
 /// Per band: every hop's channels together, scored per gain.
-fn print_bands(sweeps: &[GainSweep]) {
+fn print_bands(sweeps: &[GainSweep], unit: &str) {
     let mut bands: Vec<&str> = sweeps.iter().map(|s| band(s.center_hz)).collect();
     bands.dedup();
-    println!("\nGain advice (Airspy linearity preset; decoded TSBKs per channel, each against its best):");
+    println!("\nGain advice ({unit}; decoded TSBKs per channel, each against its best):");
     for b in bands {
         let these: Vec<&GainSweep> = sweeps.iter().filter(|s| band(s.center_hz) == b).collect();
         let gains: Vec<f32> = these[0].steps.iter().map(|s| s.gain).collect();
@@ -416,16 +450,19 @@ fn print_bands(sweeps: &[GainSweep]) {
     }
 }
 
-/// `p25-survey radios`: the radios plugged in.
+/// `p25-survey radios`: the radios plugged in (and the kinds whose library
+/// isn't installed).
 pub fn radios() -> Result<(), String> {
-    match survey_radio::airspy::list() {
-        Ok(s) if s.is_empty() => println!("No Airspy plugged in."),
-        Ok(s) => {
-            for serial in s {
-                println!("airspy:{serial:016X}");
-            }
-        }
-        Err(e) => println!("Airspy: {e}"),
+    let all = survey_radio::list();
+    let found: Vec<&String> = all.iter().filter_map(|r| r.as_ref().ok()).collect();
+    if found.is_empty() {
+        println!("No radio plugged in.");
+    }
+    for r in found {
+        println!("{r}");
+    }
+    for e in all.iter().filter_map(|r| r.as_ref().err()) {
+        println!("  ({e})");
     }
     Ok(())
 }
