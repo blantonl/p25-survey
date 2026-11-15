@@ -6,6 +6,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
+use survey_core::p25::service_names;
 use survey_core::survey::{Record, Verdict};
 
 /// The record for one candidate.
@@ -29,12 +30,22 @@ pub fn to_json(r: &Record, driver: &str, gain_db: Option<f64>, ppm: f64) -> Valu
         "nac": hex(s.nac.map(u32::from), 3),
         "rfss_id": s.rfss,
         "site_id": s.site,
+        "site_network_active": s.network_active,
+        "site_lra": s.lra,
+        "services_available": s.services.map_or(Vec::new(), |(a, _)| service_names(a)),
+        "services_supported": s.services.map_or(Vec::new(), |(_, b)| service_names(b)),
+        "utc_offset_min": s.utc_offset_min,
+        "encryption_algid": s.encryption_algid,
         "neighbors": s.neighbors().filter_map(|(n, f)| Some(json!({
             "freq_hz": f?,
             "rfss_id": n.rfss,
             "site_id": n.site,
             "sysid": format!("{:03X}", n.sysid),
             "wacn": n.wacn.map(|w| format!("{w:05X}")),
+            "conventional": n.flags.map(|f| f.conventional),
+            "site_failure": n.flags.map(|f| f.failure),
+            "valid": n.flags.map(|f| f.valid),
+            "network_active": n.flags.map(|f| f.active),
         }))).collect::<Vec<_>>(),
         "secondary_cc": s.secondary().filter_map(|(_, f)| f).collect::<Vec<_>>(),
         "iden_up": s.plan.entries().map(|i| json!({
@@ -44,6 +55,7 @@ pub fn to_json(r: &Record, driver: &str, gain_db: Option<f64>, ppm: f64) -> Valu
             "offset_hz": i.offset_hz,
             "is_tdma": i.tdma,
             "slots_per_carrier": i.slots,
+            "bandwidth_hz": i.bandwidth_hz,
         })).collect::<Vec<_>>(),
         "signal": {
             "rssi_dbfs_mean": Value::Null,
@@ -84,12 +96,15 @@ fn round2(v: f64) -> f64 {
     (v * 100.0).round() / 100.0
 }
 
-/// Now, as ISO 8601 UTC with milliseconds.
-pub fn now_utc() -> String {
-    let d = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
-    let secs = d.as_secs() as i64;
-    let (days, rem) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
-    // Civil date from days since 1970-01-01 (Howard Hinnant's algorithm).
+/// Today (UTC): (year, month, day).
+pub fn today() -> (i32, u32, u32) {
+    let secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+    let (y, m, d) = civil(secs.div_euclid(86_400));
+    (y as i32, m as u32, d as u32)
+}
+
+/// Year, month, day from days since 1970-01-01 (Howard Hinnant's algorithm).
+fn civil(days: i64) -> (i64, i64, i64) {
     let z = days + 719_468;
     let era = z.div_euclid(146_097);
     let doe = z - era * 146_097;
@@ -98,6 +113,14 @@ pub fn now_utc() -> String {
     let mp = (5 * doy + 2) / 153;
     let day = doy - (153 * mp + 2) / 5 + 1;
     let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = yoe + era * 400 + (month <= 2) as i64;
+    (yoe + era * 400 + (month <= 2) as i64, month, day)
+}
+
+/// Now, as ISO 8601 UTC with milliseconds.
+pub fn now_utc() -> String {
+    let d = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    let secs = d.as_secs() as i64;
+    let (days, rem) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
+    let (year, month, day) = civil(days);
     format!("{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{:03}+00:00", rem / 3600, rem % 3600 / 60, rem % 60, d.subsec_millis())
 }

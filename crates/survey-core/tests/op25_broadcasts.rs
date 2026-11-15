@@ -107,7 +107,9 @@ fn sites_match_op25() {
         }
 
         let plan: Vec<_> = site.plan.entries().map(|i| (i.iden, i.base_hz, i.step_hz, i.offset_hz, i.tdma, i.slots)).collect();
-        let want: Vec<_> = rec.iden_up.iter().map(|i| (i.iden, i.base_freq_hz, i.step_hz, i.offset_hz, i.is_tdma, i.slots_per_carrier)).collect();
+        // (p25-survey 0.3.5 called a 1-slot IDEN_UP_TDMA "TDMA"; it's FDMA.)
+        let want: Vec<_> =
+            rec.iden_up.iter().map(|i| (i.iden, i.base_freq_hz, i.step_hz, i.offset_hz, i.is_tdma && i.slots_per_carrier > 1, i.slots_per_carrier)).collect();
         assert_eq!(plan, want, "{at}: band plan");
 
         // (p25-survey lists only the neighbours it could resolve.)

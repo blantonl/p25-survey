@@ -9,7 +9,7 @@ use std::collections::VecDeque;
 use num_complex::Complex32;
 
 use super::framer::{Event, Framer, Stats};
-use super::{SiteInfo, TSBK_LEN, parse_tsbk};
+use super::{SiteInfo, TSBK_LEN, parse_mbt, parse_tsbk};
 use crate::dsp::Discriminator;
 use crate::dsp::cqpsk::Cqpsk;
 
@@ -49,7 +49,12 @@ pub struct ControlChannel {
     /// TSBKs taken from each receiver (first to decode it).
     pub first: [u32; 2],
     pub tsbks: u32,
+    /// PDUs (MBT, data) that passed their CRCs, each once.
+    pub pdus: u32,
 }
+
+/// The block number a PDU is noted under (a TSDU's blocks are 0..3).
+const PDU_BLOCK: u8 = 0xff;
 
 impl ControlChannel {
     pub fn new(rate_hz: f64, samples_per_symbol: f64) -> ControlChannel {
@@ -65,6 +70,7 @@ impl ControlChannel {
             site: SiteInfo::default(),
             first: [0; 2],
             tsbks: 0,
+            pdus: 0,
         }
     }
 
@@ -107,6 +113,16 @@ impl ControlChannel {
                                 self.site.push(b);
                             }
                             out.push(Tsbk { at, nac, octets, by: k });
+                        }
+                    }
+                    Event::Pdu { at, header, data, .. } => {
+                        // A PDU is one per frame: its "block" can't be a TSBK's.
+                        let at = at.saturating_sub(delay);
+                        if self.take(at, PDU_BLOCK) {
+                            self.pdus += 1;
+                            if let Some(b) = parse_mbt(&header, &data) {
+                                self.site.push(b);
+                            }
                         }
                     }
                 }

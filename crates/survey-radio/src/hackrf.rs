@@ -257,6 +257,15 @@ impl Radio for HackRf {
         vec![0.0, 8.0, 16.0, 24.0, 32.0, 40.0]
     }
 
+    fn gain_settings(&self) -> Vec<String> {
+        vec![
+            "--gain 0-40: LNA (IF) gain, dB, in 8 dB steps (default 16)".into(),
+            "--vga 0-62: baseband gain, dB, in 2 dB steps (default 24)".into(),
+            "--amp: the 14 dB RF amplifier (off by default)".into(),
+            format!("sample rate {:.1} MS/s (--rate, 2-20)", self.rate / 1e6),
+        ]
+    }
+
     fn dc_spike(&self) -> bool {
         true
     }

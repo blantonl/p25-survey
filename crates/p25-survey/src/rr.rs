@@ -350,6 +350,47 @@ impl Client {
     }
 }
 
+/// What a getUserData expiry says of the subscription.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Subscription {
+    Active(String),
+    /// "Never" (lifetime, admin).
+    Lifetime,
+    Expired(String),
+    /// Missing, unreadable, or 01-01-1970 (a PHP timestamp of 0: no date
+    /// stored, seen on accounts whose lookups work).
+    Unknown(String),
+}
+
+/// RR renders the expiry MM-DD-YYYY (ISO YYYY-MM-DD also taken). `today`:
+/// (year, month, day).
+pub fn subscription(expiry: &str, today: (i32, u32, u32)) -> Subscription {
+    let s = expiry.trim();
+    if s.is_empty() {
+        return Subscription::Unknown("RR gave no subscription expiry".into());
+    }
+    if s.to_ascii_lowercase().starts_with("never") {
+        return Subscription::Lifetime;
+    }
+    let digits: Vec<&str> = s.split(|c: char| !c.is_ascii_digit()).filter(|p| !p.is_empty()).collect();
+    let date = match digits.as_slice() {
+        [y, m, d, ..] if y.len() == 4 => (y.parse().ok(), m.parse().ok(), d.parse().ok()),
+        [m, d, y, ..] if y.len() == 4 => (y.parse().ok(), m.parse().ok(), d.parse().ok()),
+        _ => (None, None, None),
+    };
+    let (Some(y), Some(m), Some(d)) = date else {
+        return Subscription::Unknown(format!("couldn't read the expiry {s:?}"));
+    };
+    let iso = format!("{y:04}-{m:02}-{d:02}");
+    if (y, m, d) == (1970, 1, 1) {
+        Subscription::Unknown(format!("expiry {iso} (none stored)"))
+    } else if (y, m, d) < today {
+        Subscription::Expired(iso)
+    } else {
+        Subscription::Active(iso)
+    }
+}
+
 #[cfg(test)]
 pub mod tests {
     use super::*;
@@ -419,6 +460,17 @@ pub mod tests {
         assert_eq!(s[0].control_freqs().collect::<Vec<_>>(), vec![851_012_500]);
         assert_eq!(s[0].frequencies.len(), 2);
         assert_eq!(s[0].licenses, vec!["WQAB123".to_string()]);
+    }
+
+    #[test]
+    fn subscriptions() {
+        let today = (2026, 11, 15);
+        assert_eq!(subscription("10-03-2018", today), Subscription::Expired("2018-10-03".into()));
+        assert_eq!(subscription("12-31-2027", today), Subscription::Active("2027-12-31".into()));
+        assert_eq!(subscription("2027-01-01T00:00:00", today), Subscription::Active("2027-01-01".into()));
+        assert_eq!(subscription("Never - Admin", today), Subscription::Lifetime);
+        assert!(matches!(subscription("01-01-1970", today), Subscription::Unknown(_)));
+        assert!(matches!(subscription("", today), Subscription::Unknown(_)));
     }
 
     #[test]

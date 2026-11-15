@@ -18,6 +18,15 @@ pub struct Neighbor {
     pub sysid: Option<String>,
     #[serde(default)]
     pub wacn: Option<String>,
+    /// ADJ_STS_BCST's status bits (None: not decoded).
+    #[serde(default)]
+    pub conventional: Option<bool>,
+    #[serde(default)]
+    pub site_failure: Option<bool>,
+    #[serde(default)]
+    pub valid: Option<bool>,
+    #[serde(default)]
+    pub network_active: Option<bool>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -30,6 +39,8 @@ pub struct Iden {
     pub is_tdma: bool,
     #[serde(default = "one")]
     pub slots_per_carrier: u32,
+    #[serde(default)]
+    pub bandwidth_hz: Option<u64>,
 }
 
 fn one() -> u32 {
@@ -65,6 +76,20 @@ pub struct Row {
     pub rfss_id: Option<u32>,
     #[serde(default)]
     pub site_id: Option<u32>,
+    /// RFSS_STS_BCST's A bit: false is failsoft (site trunking).
+    #[serde(default)]
+    pub site_network_active: Option<bool>,
+    #[serde(default)]
+    pub site_lra: Option<u32>,
+    #[serde(default)]
+    pub services_available: Vec<String>,
+    #[serde(default)]
+    pub services_supported: Vec<String>,
+    #[serde(default)]
+    pub utc_offset_min: Option<i32>,
+    /// P_PARM_BCST: an encrypted control channel, and its algorithm.
+    #[serde(default)]
+    pub encryption_algid: Option<u32>,
     #[serde(default)]
     pub neighbors: Vec<Neighbor>,
     #[serde(default)]
@@ -162,7 +187,8 @@ pub fn band_name(freq_hz: u64) -> &'static str {
         769_000_000..=775_000_000 => "700 MHz PS narrowband downlink (base TX, mobile RX)",
         799_000_000..=805_000_000 => "700 MHz PS narrowband uplink (mobile TX, base RX)",
         851_000_000..=869_000_000 => "800 MHz public safety (rebanded)",
-        935_000_000..=941_000_000 => "900 MHz",
+        935_000_000..=940_000_000 => "900 MHz SMR downlink (base TX, mobile RX)",
+        896_000_000..=901_000_000 => "900 MHz SMR uplink (mobile TX, base RX)",
         380_000_000..=512_000_000 => "UHF land mobile",
         150_000_000..=174_000_000 => "VHF land mobile",
         _ => "unknown",

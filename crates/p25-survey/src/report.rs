@@ -124,30 +124,65 @@ fn rr_line(r: &Row) -> Option<String> {
     }
     let name = e.rr_system_name.clone().unwrap_or_else(|| "(unknown)".into());
     if !e.site_match {
-        return Some(format!("RR: {name} — {}", if e.ambiguous_site { "site ambiguous (see notes)" } else { "RFSS/Site not in RR" }));
+        return Some(format!("RR: {name} — {}", if e.ambiguous_site { "site ambiguous (see notes)" } else { "Unidentified RFSS/Site" }));
     }
     let mut parts = vec![format!("RR: {name}")];
     parts.extend(e.rr_site_description.clone());
     parts.extend(e.rr_site_county.clone());
     if let Some(o) = &e.cc_freq_offset {
         if e.cc_freq_in_db {
-            parts.push(format!("frequency listed (offset {:+} Hz)", o.offset_hz));
+            parts.push(format!("freq match (offset {:+} Hz, {:+.3} ppm)", o.offset_hz, o.ppm));
         } else {
-            parts.push(format!("FREQUENCY NOT LISTED: nearest RR control channel {}", mhz(o.expected_hz as u64)));
+            parts.push(format!("FREQ MISMATCH: RR={}, offset {:+} Hz", mhz(o.expected_hz as u64), o.offset_hz));
         }
     }
     match site_nac_diff(r.nac.as_deref(), e.rr_site_nac.as_deref()) {
-        Some("missing") => parts.push("RR has no NAC".into()),
-        Some(_) => parts.push(format!("NAC differs (RR {})", e.rr_site_nac.clone().unwrap_or_default())),
+        Some("missing") => parts.push(format!("NAC MISMATCH: RR has none listed, decoded {}", hex(&r.nac))),
+        Some(_) => parts.push(format!("NAC MISMATCH: RR={}, decoded {}", e.rr_site_nac.clone().unwrap_or_default(), hex(&r.nac))),
         None => {}
     }
     if !e.neighbors_decoded_not_in_rr.is_empty() {
-        parts.push(format!("{} neighbour(s) not in RR", e.neighbors_decoded_not_in_rr.len()));
+        parts.push(format!("{} new-site candidate neighbor(s)", e.neighbors_decoded_not_in_rr.len()));
     }
     if !e.neighbor_cc_mismatches.is_empty() {
-        parts.push(format!("{} neighbour control channel(s) not as RR has them", e.neighbor_cc_mismatches.len()));
+        parts.push(format!("{} neighbor CC mismatch(es)", e.neighbor_cc_mismatches.len()));
+    }
+    if !e.secondary_cc_mismatches.is_empty() {
+        parts.push(format!("{} secondary CC mismatch(es)", e.secondary_cc_mismatches.len()));
     }
     Some(parts.join("; "))
+}
+
+/// An IDEN_UP entry's kind: FDMA or TDMA, and its bandwidth if given.
+fn iden_kind(i: &crate::rows::Iden) -> String {
+    let mut kind = if i.is_tdma && i.slots_per_carrier > 1 { format!("TDMA x{}", i.slots_per_carrier) } else { "FDMA".into() };
+    if let Some(bw) = i.bandwidth_hz {
+        kind += &format!(", {} kHz BW", bw as f64 / 1e3);
+    }
+    kind
+}
+
+/// What a neighbour's status bits say worth a glance (empty if nothing).
+fn neighbor_flags(n: &crate::rows::Neighbor) -> String {
+    let mut tags = Vec::new();
+    if n.conventional == Some(true) {
+        tags.push("conventional");
+    }
+    if n.site_failure == Some(true) {
+        tags.push("FAILURE");
+    }
+    if n.network_active == Some(false) {
+        tags.push("failsoft");
+    }
+    if n.valid == Some(false) {
+        tags.push("stale");
+    }
+    if tags.is_empty() { String::new() } else { format!("  [{}]", tags.join(", ")) }
+}
+
+/// A UTC offset in minutes as ±HH:MM.
+fn utc_offset(min: i32) -> String {
+    format!("{}{:02}:{:02}", if min < 0 { '-' } else { '+' }, min.abs() / 60, min.abs() % 60)
 }
 
 fn write_clock(out: &mut String, c: &Clock, markdown: bool) {
@@ -182,7 +217,20 @@ fn write_clock(out: &mut String, c: &Clock, markdown: bool) {
 fn write_record(out: &mut String, r: &Row) {
     let head = format!("{}  WACN {}  SYS {}  NAC {}", mhz(r.freq_hz), hex(&r.wacn), hex(&r.sysid), hex(&r.nac));
     let _ = writeln!(out, "{head}\n{}", "-".repeat(head.chars().count()));
-    let _ = writeln!(out, "  RFSS / Site:  {} / {}", opt(r.rfss_id), opt(r.site_id));
+    let failsoft = if r.site_network_active == Some(false) { "  [FAILSOFT — no active RFSS network connection]" } else { "" };
+    let _ = writeln!(out, "  RFSS / Site:  {} / {}{failsoft}", opt(r.rfss_id), opt(r.site_id));
+    if let Some(a) = r.encryption_algid {
+        let _ = writeln!(out, "  Protected CC: P_PARM_BCST present — encrypted control channel (algid 0x{a:02X})");
+    }
+    if let Some(l) = r.site_lra {
+        let _ = writeln!(out, "  LRA:          0x{l:02X}");
+    }
+    if !r.services_available.is_empty() {
+        let _ = writeln!(out, "  Services:     {}", r.services_available.join(", "));
+    }
+    if let Some(m) = r.utc_offset_min {
+        let _ = writeln!(out, "  UTC offset:   {} (TIME_DATE_ANN)", utc_offset(m));
+    }
     let _ = writeln!(out, "  Detected at:  {}", r.ts);
     let _ = writeln!(out, "  Dwell:        {} ms  ({})", r.dwell_ms, if r.complete { "complete" } else { "partial" });
     let mut signal = Vec::new();
@@ -208,7 +256,7 @@ fn write_record(out: &mut String, r: &Row) {
     if !r.iden_up.is_empty() {
         let _ = writeln!(out, "  Band plan:    {} entr{}", r.iden_up.len(), if r.iden_up.len() == 1 { "y" } else { "ies" });
         for i in &r.iden_up {
-            let kind = if i.is_tdma { format!("TDMA x{}", i.slots_per_carrier) } else { "FDMA".into() };
+            let kind = iden_kind(i);
             let _ = writeln!(
                 out,
                 "    iden {}: base {}, step {} kHz, offset {:+} MHz [{kind}]",
@@ -220,7 +268,17 @@ fn write_record(out: &mut String, r: &Row) {
         }
     }
     if !r.secondary_cc.is_empty() {
-        let _ = writeln!(out, "  Secondary CC: {}", r.secondary_cc.iter().map(|&f| mhz(f)).collect::<Vec<_>>().join(", "));
+        let missing = r.rr.as_ref().map_or(&[][..], |e| &e.secondary_cc_mismatches[..]);
+        let parts: Vec<String> = r
+            .secondary_cc
+            .iter()
+            .map(|&f| match missing.iter().find(|m| m.freq_hz == f) {
+                None => mhz(f),
+                Some(m) if m.kind == "missing_from_rr" => format!("{} [not in RR frequency list]", mhz(f)),
+                Some(m) => format!("{} [in RR, use=\"{}\" not control]", mhz(f), m.rr_use_code.clone().filter(|u| !u.is_empty()).unwrap_or("(blank)".into())),
+            })
+            .collect();
+        let _ = writeln!(out, "  Secondary CC: {}", parts.join(", "));
     }
     if r.neighbors.is_empty() {
         let _ = writeln!(out, "  Neighbors:    (none reported)");
@@ -234,19 +292,20 @@ fn write_record(out: &mut String, r: &Row) {
                 if o.in_rr {
                     [o.description.clone(), o.location.clone(), o.county.clone()].into_iter().flatten().collect::<Vec<_>>().join(" / ")
                 } else {
-                    "not in RR".into()
+                    "(not in RR roster)".into()
                 }
             });
-            let _ = writeln!(
-                out,
-                "    {:<14} {:>4} {:>4} {:>6} {:>4}  {}",
+            let line = format!(
+                "    {:<14} {:>4} {:>4} {:>6} {:>4}  {}{}",
                 mhz(n.freq_hz),
                 n.rfss_id,
                 n.site_id,
                 hex(&n.wacn),
                 hex(&n.sysid),
-                rr.unwrap_or_default()
+                rr.unwrap_or_default(),
+                neighbor_flags(n)
             );
+            let _ = writeln!(out, "{}", line.trim_end());
         }
     }
     let notes: Vec<&String> = r.notes.iter().chain(r.rr.iter().flat_map(|e| e.notes.iter())).collect();
@@ -317,6 +376,23 @@ pub fn text(rows: &[Row]) -> String {
     out
 }
 
+/// What a new system's or site's control channel says about itself, beyond
+/// its identity: secondary control channels, LRA, encryption, services.
+fn site_details(b: &mut String, r: &Row) {
+    if !r.secondary_cc.is_empty() {
+        let _ = writeln!(b, "- Secondary control channels (SCCB): {}", r.secondary_cc.iter().map(|&f| mhz(f)).collect::<Vec<_>>().join(", "));
+    }
+    if let Some(l) = r.site_lra {
+        let _ = writeln!(b, "- LRA: 0x{l:02X}");
+    }
+    if let Some(a) = r.encryption_algid {
+        let _ = writeln!(b, "- **Encrypted control channel** (P_PARM_BCST, algid 0x{a:02X})");
+    }
+    if !r.services_available.is_empty() {
+        let _ = writeln!(b, "- System services: {}", r.services_available.join(", "));
+    }
+}
+
 fn e(r: &Row) -> Option<&Enrichment> {
     r.rr.as_ref()
 }
@@ -349,9 +425,10 @@ pub fn submissions(rows: &[Row]) -> String {
     let nac = count(&|r, e| e.site_match && site_nac_diff(r.nac.as_deref(), e.rr_site_nac.as_deref()).is_some());
     let nbr_new = count(&|_, e| e.site_match && !e.neighbors_decoded_not_in_rr.is_empty());
     let nbr_cc = count(&|_, e| e.site_match && !e.neighbor_cc_mismatches.is_empty());
+    let sec_cc = count(&|_, e| e.site_match && !e.secondary_cc_mismatches.is_empty());
     let _ = writeln!(
         out,
-        "## Summary\n\n- Records scanned: **{}**\n- Looked up in RR: **{}**\n- New system candidates: **{new_systems}**\n- New site candidates: **{new_sites}**\n- Frequency mismatches: **{freq}**\n- Site NAC mismatches: **{nac}**\n- Sites with new-site neighbor candidates: **{nbr_new}**\n- Sites with neighbor CC mismatches: **{nbr_cc}**\n",
+        "## Summary\n\n- Records scanned: **{}**\n- Looked up in RR: **{}**\n- New system candidates: **{new_systems}**\n- New site candidates: **{new_sites}**\n- Frequency mismatches: **{freq}**\n- Site NAC mismatches: **{nac}**\n- Sites with secondary CC mismatches: **{sec_cc}**\n- Sites with new-site neighbor candidates: **{nbr_new}**\n- Sites with neighbor CC mismatches: **{nbr_cc}**\n",
         rows.len(),
         rows.iter().filter(|r| r.rr.is_some()).count()
     );
@@ -370,10 +447,12 @@ pub fn submissions(rows: &[Row]) -> String {
         if !r.iden_up.is_empty() {
             let _ = writeln!(b, "- Band plan: {} IDEN_UP entries", r.iden_up.len());
         }
+        site_details(&mut b, r);
         if !r.neighbors.is_empty() {
             let _ = writeln!(b, "- Neighbors (also probably new):");
             for n in &r.neighbors {
-                let _ = writeln!(b, "    - {}, RFSS {}, Site {}", mhz(n.freq_hz), n.rfss_id, n.site_id);
+                let conv = if n.conventional == Some(true) { " (conventional)" } else { "" };
+                let _ = writeln!(b, "    - {}, RFSS {}, Site {}{conv}", mhz(n.freq_hz), n.rfss_id, n.site_id);
             }
         }
         b.push('\n');
@@ -391,7 +470,7 @@ pub fn submissions(rows: &[Row]) -> String {
         if !r.iden_up.is_empty() {
             let _ = writeln!(b, "- Band plan ({} entries):", r.iden_up.len());
             for i in &r.iden_up {
-                let kind = if i.is_tdma { format!("TDMA x{}", i.slots_per_carrier) } else { "FDMA".into() };
+                let kind = iden_kind(i);
                 let _ = writeln!(
                     b,
                     "    - iden {}: base {}, step {} kHz, offset {:+} MHz [{kind}]",
@@ -402,10 +481,12 @@ pub fn submissions(rows: &[Row]) -> String {
                 );
             }
         }
+        site_details(&mut b, r);
         if !r.neighbors.is_empty() {
             let _ = writeln!(b, "- Reported neighbors:");
             for n in &r.neighbors {
-                let _ = writeln!(b, "    - {}, RFSS {}, Site {}", mhz(n.freq_hz), n.rfss_id, n.site_id);
+                let conv = if n.conventional == Some(true) { " (conventional)" } else { "" };
+                let _ = writeln!(b, "    - {}, RFSS {}, Site {}{conv}", mhz(n.freq_hz), n.rfss_id, n.site_id);
             }
         }
         b.push('\n');
@@ -439,6 +520,31 @@ pub fn submissions(rows: &[Row]) -> String {
         }
     }
     section(&mut out, "## Site NAC mismatches\n\nThe site is in RR, but RR has no NAC for it, or another one.\n\n", b);
+
+    let mut b = String::new();
+    for r in &rs {
+        let Some(en) = e(r).filter(|en| en.site_match && !en.secondary_cc_mismatches.is_empty()) else { continue };
+        b += &site_header(r, en);
+        let _ = writeln!(b, "- Decoded CC: {}", mhz(r.freq_hz));
+        for m in &en.secondary_cc_mismatches {
+            if m.kind == "missing_from_rr" {
+                let _ = writeln!(b, "    - secondary CC **{}** is not in the site's RR frequency list", mhz(m.freq_hz));
+            } else {
+                let _ = writeln!(
+                    b,
+                    "    - secondary CC **{}** is listed but `use=\"{}\"` (should be \"d\" or \"a\")",
+                    mhz(m.freq_hz),
+                    m.rr_use_code.clone().filter(|u| !u.is_empty()).unwrap_or("(blank)".into())
+                );
+            }
+        }
+        b.push('\n');
+    }
+    section(
+        &mut out,
+        "## Secondary control-channel mismatches\n\nSecondary control channels the site announces (SCCB) that aren't in its RR frequency list, or are listed but not as control channels.\n\n",
+        b,
+    );
 
     let mut b = String::new();
     for r in &rs {
@@ -501,7 +607,7 @@ pub fn submissions(rows: &[Row]) -> String {
     }
     section(&mut out, "## Observed neighbor roster\n\nThe neighbours each site announced, with RR's description of each.\n\n", b);
 
-    if new_systems + new_sites + freq + nac + nbr_new + nbr_cc == 0 {
+    if new_systems + new_sites + freq + nac + sec_cc + nbr_new + nbr_cc == 0 {
         out.push_str("## (Nothing to submit)\n\nEvery system decoded matched RadioReference. No submissions needed.\n");
     }
     out

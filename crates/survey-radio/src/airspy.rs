@@ -278,6 +278,14 @@ impl Radio for Spy {
         vec![6.0, 9.0, 12.0, 15.0, 18.0]
     }
 
+    fn gain_settings(&self) -> Vec<String> {
+        vec![
+            "--gain 0-21: linearity preset (default 14); --gain auto: LNA and mixer AGC".into(),
+            "--sensitivity 0-21: sensitivity preset instead".into(),
+            format!("sample rate {:.1} MS/s (--rate: the highest at or under it)", self.rate / 1e6),
+        ]
+    }
+
     fn dc_spike(&self) -> bool {
         false
     }

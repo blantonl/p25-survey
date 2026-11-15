@@ -237,6 +237,15 @@ impl Radio for Rtl {
         vec![20.0, 28.0, 34.0, 39.0, 44.0, 49.6]
     }
 
+    fn gain_settings(&self) -> Vec<String> {
+        let gains: Vec<String> = self.gains.iter().map(|g| format!("{}", *g as f32 / 10.0)).collect();
+        vec![
+            format!("--gain dB: tuner gain, the nearest of {}", gains.join(", ")),
+            "--gain auto: the tuner's AGC (the default)".into(),
+            format!("sample rate {:.2} MS/s (--rate)", self.rate / 1e6),
+        ]
+    }
+
     fn dc_spike(&self) -> bool {
         true
     }

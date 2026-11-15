@@ -10,11 +10,14 @@ pub struct IdenUp {
     pub step_hz: u32,
     /// Uplink minus downlink.
     pub offset_hz: i64,
-    /// From IDEN_UP_TDMA (whose channel type may still be a 1-slot FDMA one).
+    /// TDMA channels: two or more slots a carrier. (IDEN_UP_TDMA can describe
+    /// 1-slot FDMA channels too: those aren't.)
     pub tdma: bool,
     /// TDMA slots per carrier: channel numbers count slots, so the carrier is
     /// channel / slots.
     pub slots: u8,
+    /// The channels' bandwidth, where the update says (IDEN_UP_VU).
+    pub bandwidth_hz: Option<u32>,
 }
 
 /// Slots per carrier of an IDEN_UP_TDMA channel type (0..=5 defined; the
@@ -74,7 +77,7 @@ mod tests {
     use super::*;
 
     fn fdma(iden: u8, base_hz: u64, step_hz: u32) -> IdenUp {
-        IdenUp { iden, base_hz, step_hz, offset_hz: 0, tdma: false, slots: 1 }
+        IdenUp { iden, base_hz, step_hz, offset_hz: 0, tdma: false, slots: 1, bandwidth_hz: None }
     }
 
     #[test]
@@ -95,7 +98,7 @@ mod tests {
     #[test]
     fn tdma_channels_count_slots() {
         let mut p = BandPlan::default();
-        p.insert(IdenUp { iden: 2, base_hz: 851_000_000, step_hz: 12_500, offset_hz: 0, tdma: true, slots: 2 });
+        p.insert(IdenUp { iden: 2, base_hz: 851_000_000, step_hz: 12_500, offset_hz: 0, tdma: true, slots: 2, bandwidth_hz: None });
         let t = 2 << 12;
         assert_eq!(p.frequency(t), Some(851_000_000));
         assert_eq!(p.frequency(t | 1), Some(851_000_000));

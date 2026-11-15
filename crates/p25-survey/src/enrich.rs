@@ -52,6 +52,17 @@ pub struct NeighborCcMismatch {
     pub rr_site_description: Option<String>,
 }
 
+/// One of this site's own secondary control channels (SCCB) that RR doesn't
+/// list for it, or lists but not as a control channel.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct SecondaryCcMismatch {
+    pub freq_hz: u64,
+    /// "missing_from_rr" or "not_marked_control".
+    pub kind: String,
+    #[serde(default)]
+    pub rr_use_code: Option<String>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Enrichment {
@@ -74,6 +85,7 @@ pub struct Enrichment {
     pub observed_neighbors: Vec<NeighborRef>,
     pub neighbors_decoded_not_in_rr: Vec<NeighborRef>,
     pub neighbor_cc_mismatches: Vec<NeighborCcMismatch>,
+    pub secondary_cc_mismatches: Vec<SecondaryCcMismatch>,
     pub notes: Vec<String>,
 }
 
@@ -232,6 +244,18 @@ fn site_match(r: &Row, system: &System, sites: &[Site], site: &Site) -> Enrichme
         });
         e.cc_freq_in_db = offset.abs() < SAME_HZ;
     }
+    // The site's own secondary control channels, against its RR frequencies.
+    let mut secondaries = r.secondary_cc.clone();
+    secondaries.sort();
+    for f in secondaries {
+        match listed(f, site) {
+            Listed::Control => {}
+            Listed::No => e.secondary_cc_mismatches.push(SecondaryCcMismatch { freq_hz: f, kind: "missing_from_rr".into(), rr_use_code: None }),
+            Listed::NotControl(u) => {
+                e.secondary_cc_mismatches.push(SecondaryCcMismatch { freq_hz: f, kind: "not_marked_control".into(), rr_use_code: Some(u) })
+            }
+        }
+    }
     let others: BTreeMap<(u32, u32), &Site> =
         sites.iter().filter(|s| !(s.rfss == site.rfss && s.site_number == site.site_number)).map(|s| ((s.rfss, s.site_number), s)).collect();
     let mut neighbors: Vec<_> = r.neighbors.iter().collect();
@@ -273,11 +297,31 @@ fn neighbor_cc(rfss: u32, site: u32, freq: u64, s: &Site) -> Option<NeighborCcMi
         rr_use_code: use_code,
         rr_site_description: some(&s.description),
     };
+    match listed(freq, s) {
+        Listed::Control => None,
+        Listed::NotControl(u) => Some(m("not_marked_control", Some(u))),
+        Listed::No => Some(m("missing_from_rr", None)),
+    }
+}
+
+/// How an RR site lists a frequency.
+enum Listed {
+    Control,
+    /// Listed, with this use code (not a control channel's).
+    NotControl(String),
+    No,
+}
+
+fn listed(freq: u64, s: &Site) -> Listed {
     match s.frequencies.iter().min_by_key(|f| (f.freq_hz as i64 - freq as i64).abs()) {
-        None => Some(m("missing_from_rr", None)),
-        Some(c) if (c.freq_hz as i64 - freq as i64).abs() >= SAME_HZ => Some(m("missing_from_rr", None)),
-        Some(c) if !c.is_control() => Some(m("not_marked_control", Some(c.use_code.clone()))),
-        _ => None,
+        Some(c) if (c.freq_hz as i64 - freq as i64).abs() < SAME_HZ => {
+            if c.is_control() {
+                Listed::Control
+            } else {
+                Listed::NotControl(c.use_code.clone())
+            }
+        }
+        _ => Listed::No,
     }
 }
 
@@ -341,6 +385,15 @@ mod tests {
         assert_eq!(e.neighbors_decoded_not_in_rr[0].site_id, 8);
         assert_eq!(e.neighbor_cc_mismatches.len(), 1);
         assert_eq!(e.neighbor_cc_mismatches[0].kind, "not_marked_control");
+    }
+
+    #[test]
+    fn secondary_control_channels_against_the_site() {
+        let mut r = row(858_437_500, 1, 1);
+        // One RR lists as a control channel, one it doesn't list.
+        r.secondary_cc = vec![858_437_500, 860_000_000];
+        let e = enrich(&r, &rr());
+        assert_eq!(e.secondary_cc_mismatches, vec![SecondaryCcMismatch { freq_hz: 860_000_000, kind: "missing_from_rr".into(), rr_use_code: None }]);
     }
 
     #[test]

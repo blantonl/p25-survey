@@ -30,13 +30,28 @@ pub struct DetectConfig {
     /// either side of it is wide, not a channel, Hz.
     pub wide_hz: f64,
     pub wide_db: f64,
+    /// The channel grids to look on, Hz. Empty: the band's ([`raster_hz`]).
+    /// Several (VHF/UHF systems mixing 5, 6.25, 7.5 and 12.5 kHz channels):
+    /// each is looked on, and a channel found on more than one is kept once.
+    pub rasters_hz: Vec<f64>,
 }
 
 impl Default for DetectConfig {
     fn default() -> Self {
-        DetectConfig { threshold_db: 4.5, percentile: 0.2, channel_half_hz: 4000.0, floor_half_hz: 150_000.0, wide_hz: 25_000.0, wide_db: 6.0 }
+        DetectConfig {
+            threshold_db: 4.5,
+            percentile: 0.2,
+            channel_half_hz: 4000.0,
+            floor_half_hz: 150_000.0,
+            wide_hz: 25_000.0,
+            wide_db: 6.0,
+            rasters_hz: Vec::new(),
+        }
     }
 }
+
+/// Two grids' candidates nearer than this are one channel.
+const SAME_CHANNEL_HZ: f64 = 4000.0;
 
 /// A channel that stood out.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -132,6 +147,12 @@ impl Detector {
     /// Each raster channel from `lo_hz` to `hi_hz` (and four more each side):
     /// (frequency, level over the floor, power, floor), dB.
     pub fn levels(&self, center_hz: f64, lo_hz: f64, hi_hz: f64, cfg: &DetectConfig) -> Vec<(f64, f64, f64, f64)> {
+        let r = cfg.rasters_hz.first().copied().unwrap_or_else(|| raster_hz((lo_hz + hi_hz) / 2.0));
+        self.levels_on(center_hz, lo_hz, hi_hz, cfg, r)
+    }
+
+    /// [`Self::levels`] on the grid of `r` Hz.
+    fn levels_on(&self, center_hz: f64, lo_hz: f64, hi_hz: f64, cfg: &DetectConfig, r: f64) -> Vec<(f64, f64, f64, f64)> {
         let spec = self.spectrum(cfg.percentile);
         let bin = self.bin_hz();
         let half = (self.n / 2) as f64;
@@ -152,7 +173,6 @@ impl Detector {
             let mid = v.len() / 2;
             *v.select_nth_unstable_by(mid, |a, b| a.total_cmp(b)).1 as f64
         };
-        let r = raster_hz((lo_hz + hi_hz) / 2.0);
         let first = (lo_hz / r).ceil() as i64;
         let last = (hi_hz / r).floor() as i64;
         (first - 4..=last + 4)
@@ -167,12 +187,30 @@ impl Detector {
     /// The channels that stood out, between `lo_hz` and `hi_hz` (absolute),
     /// for a tuning centred on `center_hz`.
     pub fn find(&self, center_hz: f64, lo_hz: f64, hi_hz: f64, cfg: &DetectConfig) -> Vec<Found> {
-        let mut out = Vec::new();
         if hi_hz <= lo_hz {
-            return out;
+            return Vec::new();
         }
-        let r = raster_hz((lo_hz + hi_hz) / 2.0);
-        let levels: Vec<(f64, f64)> = self.levels(center_hz, lo_hz, hi_hz, cfg).into_iter().map(|(f, l, _, _)| (f, l)).collect();
+        let rasters = if cfg.rasters_hz.is_empty() { vec![raster_hz((lo_hz + hi_hz) / 2.0)] } else { cfg.rasters_hz.clone() };
+        let mut all: Vec<Found> = rasters.iter().flat_map(|&r| self.find_on(center_hz, lo_hz, hi_hz, cfg, r)).collect();
+        if rasters.len() == 1 {
+            return all;
+        }
+        // One channel found on several grids: the strongest reading of it.
+        all.sort_by(|a, b| b.level_db.total_cmp(&a.level_db));
+        let mut out: Vec<Found> = Vec::new();
+        for f in all {
+            if !out.iter().any(|k| (k.freq_hz - f.freq_hz).abs() < SAME_CHANNEL_HZ) {
+                out.push(f);
+            }
+        }
+        out.sort_by(|a, b| a.freq_hz.total_cmp(&b.freq_hz));
+        out
+    }
+
+    /// [`Self::find`] on the grid of `r` Hz.
+    fn find_on(&self, center_hz: f64, lo_hz: f64, hi_hz: f64, cfg: &DetectConfig, r: f64) -> Vec<Found> {
+        let mut out = Vec::new();
+        let levels: Vec<(f64, f64)> = self.levels_on(center_hz, lo_hz, hi_hz, cfg, r).into_iter().map(|(f, l, _, _)| (f, l)).collect();
         let reach = (cfg.wide_hz / r).round() as usize;
         for i in 4..levels.len() - 4 {
             let (f, l) = levels[i];

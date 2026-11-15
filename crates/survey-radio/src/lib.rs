@@ -65,6 +65,8 @@ pub trait Radio: Send {
     /// A spike at the tuned centre (the LO leaking through): the survey keeps
     /// channels off it.
     fn dc_spike(&self) -> bool;
+    /// Its gain settings, as `--gain` and the rest take them.
+    fn gain_settings(&self) -> Vec<String>;
 }
 
 /// Blocks queued between a driver's own thread and the reader.
@@ -161,7 +163,8 @@ pub fn open(spec: &str, opts: &Options) -> Result<Box<dyn Radio>, RadioError> {
     let (kind, serial) = spec.split_once(':').map_or((spec, None), |(k, s)| (k, Some(s)));
     let hex = |s: &str| u64::from_str_radix(s.trim_start_matches("0x"), 16).map_err(|_| RadioError(format!("{kind}: serial {s}?")));
     Ok(match kind {
-        "airspy" => Box::new(airspy::Spy::open(airspy::AIRSPY, serial.map(hex).transpose()?, opts.max_rate_hz.unwrap_or(6e6))?),
+        // The highest rate it offers: an R2's 10 MS/s, a Mini's 6.
+        "airspy" => Box::new(airspy::Spy::open(airspy::AIRSPY, serial.map(hex).transpose()?, opts.max_rate_hz.unwrap_or(10e6))?),
         "hydrasdr" => Box::new(airspy::Spy::open(airspy::HYDRASDR, serial.map(hex).transpose()?, opts.max_rate_hz.unwrap_or(10e6))?),
         "rtlsdr" | "rtl" => Box::new(rtlsdr::Rtl::open(serial, opts.max_rate_hz.unwrap_or(2.4e6))?),
         "hackrf" => Box::new(hackrf::HackRf::open(serial, opts.max_rate_hz.unwrap_or(9.6e6), opts.vga_db.unwrap_or(24), opts.amp)?),

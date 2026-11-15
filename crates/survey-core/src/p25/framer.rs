@@ -7,7 +7,7 @@
 //! radio's clock within a frame is a tiny fraction of a symbol.
 
 use super::TSBK_LEN;
-use super::crc::tsbk_ok;
+use super::crc::{crc32, tsbk_ok};
 use super::nid::{self, Nid, duid};
 use super::trellis::{BLOCK_DIBITS, decode_half_rate, deinterleave};
 
@@ -18,8 +18,11 @@ const SYNC_SYMBOLS: usize = 24;
 const NID_DIBITS: usize = 32;
 /// Most TSBKs in a TSDU.
 const MAX_BLOCKS: usize = 3;
-/// Symbols a TSDU of three blocks can span, status symbols included.
-const MAX_FRAME_SYMBOLS: usize = 361;
+/// Data blocks of a PDU read (a site broadcast MBT has one to three).
+const MAX_PDU_BLOCKS: usize = 3;
+/// Symbols a frame can span, status symbols included: a PDU's header and
+/// three data blocks (a TSDU of three blocks is shorter).
+const MAX_FRAME_SYMBOLS: usize = 470;
 /// Normalised correlation with the sync pattern that starts a look at a NID.
 const SYNC_THRESHOLD: f32 = 0.75;
 
@@ -45,6 +48,9 @@ pub struct Stats {
     pub tsbk_bad: u32,
     /// Trellis bit errors corrected over every block, summed.
     pub trellis_errors: u32,
+    /// PDUs whose header and data passed their CRCs, and those that didn't.
+    pub pdu_ok: u32,
+    pub pdu_bad: u32,
 }
 
 impl Stats {
@@ -53,13 +59,16 @@ impl Stats {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event {
     /// A frame: where its sync starts (channel sample index) and its NID.
     Frame { at: u64, nid: Nid },
     /// A TSBK that passed its CRC: its frame's sync, which block of the
     /// frame it is (0..3), and its message octets.
     Tsbk { at: u64, block: u8, nac: u16, octets: [u8; TSBK_LEN] },
+    /// A PDU (unconfirmed or MBT) whose header and data passed their CRCs:
+    /// the header's 10 octets, and the data's octets without the CRC-32.
+    Pdu { at: u64, nac: u16, header: [u8; TSBK_LEN], data: Vec<u8> },
 }
 
 pub struct Framer {
@@ -171,6 +180,9 @@ impl Framer {
         self.stats.nid_errors += nid.errors;
         let at = self.start + j as u64;
         out.push(Event::Frame { at, nid });
+        if nid.duid == duid::PDU {
+            return Some(pdu(&mut self.stats, j, &mut rd, at, nid.nac, out));
+        }
         if nid.duid != duid::TSDU {
             // Voice and data frames: look for the next sync after this NID.
             return Some(j + self.at(rd.symbol));
@@ -198,6 +210,41 @@ impl Framer {
         // The next frame follows at once: look again from a symbol before.
         Some(j + self.at(end.saturating_sub(1)))
     }
+}
+
+/// A PDU after its NID: the header block, then (an unconfirmed or MBT one)
+/// its data blocks, all ½-rate trellis. The sample after it.
+fn pdu(stats: &mut Stats, j: usize, rd: &mut Reader, at: u64, nac: u16, out: &mut Vec<Event>) -> usize {
+    let sample = |rd: &Reader, symbol: usize| j + (symbol as f64 * rd.sps).round() as usize;
+    let block: [u8; BLOCK_DIBITS] = std::array::from_fn(|_| rd.next());
+    let (head, _) = decode_half_rate(&deinterleave(&block));
+    if !tsbk_ok(&head) {
+        stats.pdu_bad += 1;
+        return sample(rd, rd.symbol);
+    }
+    let header: [u8; TSBK_LEN] = head[..TSBK_LEN].try_into().unwrap();
+    // Unconfirmed (0x15) and MBT (0x17) data blocks are ½-rate; confirmed
+    // data's are ¾-rate, and no broadcast comes that way.
+    let blocks = (header[6] & 0x7f) as usize;
+    if !matches!(header[0] & 0x1f, 0x15 | 0x17) || blocks == 0 || blocks > MAX_PDU_BLOCKS {
+        return sample(rd, rd.symbol);
+    }
+    let mut data = Vec::with_capacity(12 * blocks);
+    for _ in 0..blocks {
+        let block: [u8; BLOCK_DIBITS] = std::array::from_fn(|_| rd.next());
+        data.extend_from_slice(&decode_half_rate(&deinterleave(&block)).0);
+    }
+    let end = sample(rd, rd.symbol.saturating_sub(1));
+    let n = data.len() - 4;
+    let want = u32::from_be_bytes(data[n..].try_into().unwrap());
+    if crc32(&data[..n]) != want {
+        stats.pdu_bad += 1;
+        return end;
+    }
+    data.truncate(n);
+    stats.pdu_ok += 1;
+    out.push(Event::Pdu { at, nac, header, data });
+    end
 }
 
 /// Reads a frame's data dibits, symbol by symbol, skipping status symbols.
@@ -314,6 +361,53 @@ mod tests {
         let mut ev = Vec::new();
         f.push(&samples(&symbols, 1800.0, 0.0), &mut ev);
         assert_eq!(f.stats.frames_total(), 0);
+    }
+
+    /// An MBT: sync, NID (PDU), header block, one data block (8 octets and
+    /// the CRC-32).
+    fn mbt(nac: u16, header: [u8; 10], data: [u8; 8]) -> Vec<f32> {
+        use super::super::crc::crc32;
+        let mut dibits: Vec<u8> = (0..SYNC_SYMBOLS).map(|k| (FRAME_SYNC >> (46 - 2 * k) & 3) as u8).collect();
+        let nid = nid::encode(nac << 4 | duid::PDU as u16) << 1;
+        dibits.extend((0..32).map(|k| (nid >> (62 - 2 * k) & 3) as u8));
+        let mut h = [0u8; 12];
+        h[..10].copy_from_slice(&header);
+        h[10..].copy_from_slice(&ccitt(&header).to_be_bytes());
+        dibits.extend(encode_half_rate(&h));
+        let mut d = [0u8; 12];
+        d[..8].copy_from_slice(&data);
+        d[8..].copy_from_slice(&crc32(&data).to_be_bytes());
+        dibits.extend(encode_half_rate(&d));
+        let level = |d: u8| [1.0 / 3.0, 1.0, -1.0 / 3.0, -1.0][d as usize];
+        let mut symbols = Vec::new();
+        let mut it = dibits.into_iter();
+        let mut n = 0;
+        loop {
+            if is_status(n) {
+                symbols.push(1.0 / 3.0);
+            } else {
+                match it.next() {
+                    Some(d) => symbols.push(level(d)),
+                    None => break,
+                }
+            }
+            n += 1;
+        }
+        symbols
+    }
+
+    #[test]
+    fn decodes_an_mbt() {
+        let header = [0x37, 0xfd, 0x00, 0x00, 0x39, 0x11, 0x81, 0x3c, 0x01, 0x28];
+        let data = [0xa0, 0x00, 0xa6, 0xe9, 0x70, 0xde, 0xe0, 0x00];
+        let mut x = samples(&mbt(0x910, header, data), 1800.0, 0.0);
+        x.extend(vec![0.0; 6000]);
+        let mut f = Framer::new(10.0);
+        let mut ev = Vec::new();
+        f.push(&x, &mut ev);
+        let pdus: Vec<_> = ev.iter().filter_map(|e| if let Event::Pdu { header, data, .. } = e { Some((*header, data.clone())) } else { None }).collect();
+        assert_eq!(pdus, vec![(header, data.to_vec())]);
+        assert_eq!((f.stats.pdu_ok, f.stats.pdu_bad), (1, 0));
     }
 
     #[test]

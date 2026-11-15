@@ -134,7 +134,17 @@ pub fn scan(args: &[String]) -> Result<(), String> {
     let rest = &args[paths.len()..];
     let num = |name: &str| crate::opt(rest, name).map(|v| v.parse::<f64>().map_err(|_| format!("{name}: a number"))).transpose();
     let usable = 0.85;
-    let (mut source, range, hops) = match (crate::opt(rest, "--radio"), paths.is_empty()) {
+    // No recordings and no --radio: the first radio plugged in.
+    let radio = match crate::opt(rest, "--radio") {
+        Some(r) => Some(r.to_string()),
+        None if paths.is_empty() => Some(first_radio()?),
+        None => None,
+    };
+    if rest.iter().any(|a| a == "--list-gains") {
+        let spec = radio.ok_or("scan: --list-gains needs a radio")?;
+        return list_gains(&spec, rest);
+    }
+    let (mut source, range, hops) = match (radio.as_deref(), paths.is_empty()) {
         (Some(spec), true) => {
             let (Some(start), Some(stop)) = (num("--start")?, num("--stop")?) else {
                 return Err("scan: --start and --stop (MHz) with a radio".into());
@@ -170,6 +180,11 @@ pub fn scan(args: &[String]) -> Result<(), String> {
         for c in cfg.hops.iter_mut() {
             *c += raster_hz(*c) / 2.0;
         }
+    }
+    // --step kHz[,kHz...]: the channel grid(s) to look on (by default the band's).
+    if let Some(steps) = crate::opt(rest, "--step") {
+        cfg.detect.rasters_hz =
+            steps.split(',').map(|v| v.trim().parse::<f64>().map(|k| k * 1e3).map_err(|_| format!("--step: {v}? (kHz)"))).collect::<Result<_, _>>()?;
     }
     if let Some(t) = num("--threshold")? {
         cfg.detect.threshold_db = t;
@@ -503,6 +518,27 @@ fn print_bands(sweeps: &[GainSweep], unit: &str) {
     }
 }
 
+/// The first radio plugged in, as `--radio` takes it.
+pub fn first_radio() -> Result<String, String> {
+    survey_radio::list()
+        .into_iter()
+        .flatten()
+        .next()
+        .map(|r| r.split_whitespace().next().unwrap_or_default().to_string())
+        .ok_or_else(|| "no radio found (p25-survey radios lists what's plugged in; or give --radio, or recordings)".to_string())
+}
+
+/// `--list-gains`: a radio's gain settings.
+pub fn list_gains(spec: &str, rest: &[String]) -> Result<(), String> {
+    let r = open_radio(spec, rest)?;
+    println!("{spec} ({}):", r.kind());
+    for g in r.gain_settings() {
+        println!("  {g}");
+    }
+    println!("  --auto-gain tries {}", r.sweep_gains().iter().map(|g| g.to_string()).collect::<Vec<_>>().join(", "));
+    Ok(())
+}
+
 /// `p25-survey radios`: the radios plugged in (and the kinds whose library
 /// isn't installed).
 pub fn radios() -> Result<(), String> {
@@ -600,6 +636,12 @@ fn row(r: &Record) -> String {
     );
     if r.is_control() {
         line += &format!("  idens {} nbrs {} sec {}  {:.1} s", s.plan.len(), s.neighbors().count(), s.secondary().count(), r.dwell_s);
+    }
+    if s.network_active == Some(false) {
+        line += "  FAILSOFT";
+    }
+    if s.encryption_algid.is_some() {
+        line += "  ENCRYPTED";
     }
     if let Some(c) = r.copy_of {
         line += &format!("  COPY of {:.5}", c / 1e6);

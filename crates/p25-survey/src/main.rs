@@ -44,6 +44,10 @@ fn main() -> ExitCode {
         Some("detect") if args.len() >= 2 => detect(&args[1], &args[2..]),
         Some("scan") => scan::scan(&args[1..]),
         Some("radios") => scan::radios(),
+        Some("gains") => match opt(&args[1..], "--radio").map(str::to_string).map_or_else(scan::first_radio, Ok) {
+            Ok(spec) => scan::list_gains(&spec, &args[1..]),
+            Err(e) => Err(e),
+        },
         Some("report") if args.len() >= 2 => report_cmd(&args[1], &args[2..]),
         _ => {
             eprintln!("{USAGE}");
@@ -113,10 +117,24 @@ pub(crate) fn rr_login(rest: &[String]) -> Result<rr::Client, String> {
     };
     let client = rr::Client::new(user.trim(), password.trim_end_matches(['\r', '\n']), Box::new(rr::Https::new())).map_err(|e| e.to_string())?;
     match client.user() {
-        Ok(u) => {
-            println!("RadioReference: logged in as {} (subscription expires {})", u.username, u.sub_expire_date);
-            Ok(client)
-        }
+        Ok(u) => match rr::subscription(&u.sub_expire_date, record::today()) {
+            rr::Subscription::Expired(on) => Err(format!(
+                "RadioReference Premium subscription required for --rr (expired {on}).\n  Account {} logged in, but the subscription isn't current.\n  Renew at https://www.radioreference.com/apps/content/?cid=3, or run without --rr.",
+                u.username
+            )),
+            rr::Subscription::Unknown(why) => {
+                println!("RadioReference: logged in as {} (warning: {why}; lookups may fail if the subscription isn't current)", u.username);
+                Ok(client)
+            }
+            rr::Subscription::Lifetime => {
+                println!("RadioReference: logged in as {} (no expiry)", u.username);
+                Ok(client)
+            }
+            rr::Subscription::Active(until) => {
+                println!("RadioReference: logged in as {} (subscription until {until})", u.username);
+                Ok(client)
+            }
+        },
         Err(e) if e.auth => Err(format!("RadioReference refused the login: {e}")),
         Err(e) => Err(format!("RadioReference: {e}")),
     }

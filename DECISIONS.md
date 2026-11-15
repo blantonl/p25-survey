@@ -314,6 +314,34 @@ carry it (`sdr_ppm`), and the clock in the reports is the whole error
 or without one. Live: carrier offsets from about +750 Hz to within ±140 Hz
 (the carrier measurement's own noise, about ±0.15 ppm).
 
+## 2026-11-15 — Python 0.3.6–0.4.0, ported
+
+The Python version went on to 0.4.0 after the corpus baseline (0.3.5). All
+of it is here, decoded from TIA-102 as the rest:
+
+- MBT: multi-block trunking, the site broadcasts some systems send as a
+  data PDU (a header block and data blocks, ½-rate trellis, the data under
+  a CRC-32: register from 0, inverted, as every PDU on the corpus passes)
+  instead of TSBKs: ADJ_STS_BCST, NET_STS_BCST, RFSS_STS_BCST and
+  P_PARM_BCST (an encrypted control channel). CTTRS Dallas sends its VHF
+  neighbour (1-40, Childress) only this way.
+- SYS_SRV_BCST (the site's services), TIME_DATE_ANN (its UTC offset), the
+  LRA, the C/F/V/A status bits of a site and its neighbours (failsoft,
+  failure, stale, conventional), and IDEN_UP_VU's channel bandwidth.
+- A 1-slot IDEN_UP_TDMA channel is FDMA (`is_tdma` false), as 0.3.9 has it.
+- RR: secondary control channels checked against the site's own RR
+  frequencies; an expired Premium subscription refused, with the renewal
+  link (but 01-01-1970, a PHP timestamp of 0 seen on working accounts, only
+  warns).
+- The reports: the new fields, flags and mismatches, and the RR line in
+  0.4.0's words.
+- The 900 MHz SMR band; `--step` taking several grids (the detector looks
+  on each); the Airspy at its highest rate (an R2's 10 MS/s).
+
+A neighbour heard both as a TSBK (with its status bits) and as an MBT
+(without) is one neighbour: what one form lacks the other keeps, or the
+two would alternate as "new" and the channel never go quiet.
+
 ## 2026-11-15 — License
 
 GPL-3.0-or-later, as the Python version. That was required there by op25;
