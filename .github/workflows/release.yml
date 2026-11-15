@@ -1,0 +1,80 @@
+name: Release
+
+# Builds the binaries for a release and attaches them to it: on a v* tag,
+# or by hand for an existing tag (Actions > Release > Run workflow).
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The tag to build and attach binaries to (e.g. v0.5.0)
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Built on the oldest runners there are, for the oldest glibc they
+          # need: Ubuntu 22.04, Debian 12, Raspberry Pi OS (64-bit) 12 or newer.
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-22.04 }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-22.04-arm }
+          - { target: aarch64-apple-darwin, os: macos-latest }
+          - { target: x86_64-apple-darwin, os: macos-latest, cross: true }
+          - { target: x86_64-pc-windows-msvc, os: windows-latest }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - run: cargo build --release --locked -p p25-survey --target ${{ matrix.target }}
+      - name: Package
+        shell: bash
+        run: |
+          name=p25-survey-$TAG-${{ matrix.target }}
+          bin=target/${{ matrix.target }}/release/p25-survey
+          [ -f $bin.exe ] && bin=$bin.exe
+          [ "${{ matrix.cross }}" = true ] || $bin --version
+          mkdir -p dist/$name
+          cp $bin README.md CHANGELOG.md LICENSE-MIT LICENSE-APACHE dist/$name/
+          cd dist
+          case ${{ matrix.target }} in
+            *windows*) 7z a -bso0 $name.zip $name; echo "ASSET=dist/$name.zip" >> $GITHUB_ENV ;;
+            *) tar czf $name.tar.gz $name; echo "ASSET=dist/$name.tar.gz" >> $GITHUB_ENV ;;
+          esac
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: ${{ env.ASSET }}
+
+  release:
+    needs: build
+    # What built is attached even if a target failed.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd dist
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
+          gh release view "$TAG" -R "$GITHUB_REPOSITORY" > /dev/null 2>&1 ||
+            gh release create "$TAG" -R "$GITHUB_REPOSITORY" --verify-tag --title "p25-survey ${TAG#v}" --notes "See CHANGELOG.md."
+          gh release upload "$TAG" -R "$GITHUB_REPOSITORY" --clobber *

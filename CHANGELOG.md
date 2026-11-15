@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Prebuilt binaries with each release: Linux (x86-64, 64-bit ARM / Raspberry
+  Pi), macOS (Apple silicon, Intel), Windows (untried).
+
 ## 0.5.0 (2026-11)
 
 A rewrite in Rust: one program, with no GNU Radio, op25, gr-osmosdr or

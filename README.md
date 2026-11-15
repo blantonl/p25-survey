@@ -50,16 +50,7 @@ p25-survey scan --start 769 --stop 775 --auto-gain
 
 ## Install
 
-There are no prebuilt binaries yet: build it with Rust (a few minutes).
-
-1. **Rust**, from [rustup.rs](https://rustup.rs) (1.88 or newer), for your user
-   only:
-   ```bash
-   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-   ```
-   A C linker is needed too: on Debian/Ubuntu `sudo apt install build-essential`,
-   on macOS `xcode-select --install`.
-2. **The library for your radio**, and only that one. p25-survey loads it when
+1. **The library for your radio**, and only that one. p25-survey loads it when
    the radio is opened; nothing else needs it.
 
    | Radio | Debian / Ubuntu / Raspberry Pi OS | macOS (Homebrew) |
@@ -73,7 +64,40 @@ There are no prebuilt binaries yet: build it with Rust (a few minutes).
    the radio's tools package installs them (`sudo apt install airspy`,
    `rtl-sdr` or `hackrf`). An RTL-SDR also needs the kernel's DVB driver kept
    off it (`blacklist dvb_usb_rtl28xxu`).
-3. **Build**:
+2. **p25-survey**: download it, or build it.
+
+### Download
+
+From the [latest release](https://github.com/blantonl/p25-survey/releases/latest):
+
+| System | File |
+|---|---|
+| Linux, x86-64 (Ubuntu 22.04, Debian 12 or newer) | `p25-survey-VERSION-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux, 64-bit ARM: Raspberry Pi 4/5 with a 64-bit OS (Raspberry Pi OS 12 or newer) | `p25-survey-VERSION-aarch64-unknown-linux-gnu.tar.gz` |
+| macOS, Apple silicon | `p25-survey-VERSION-aarch64-apple-darwin.tar.gz` |
+| macOS, Intel | `p25-survey-VERSION-x86_64-apple-darwin.tar.gz` |
+| Windows (untried) | `p25-survey-VERSION-x86_64-pc-windows-msvc.zip` |
+
+```bash
+tar xzf p25-survey-*.tar.gz
+cd p25-survey-*/
+./p25-survey radios        # is the radio there?
+```
+
+Copy `p25-survey` anywhere on your `PATH` (e.g. `~/.local/bin`). `SHA256SUMS`
+in the release has each file's checksum. On macOS, a downloaded program is
+quarantined until you allow it: `xattr -d com.apple.quarantine p25-survey`.
+
+### Build from source
+
+1. **Rust**, from [rustup.rs](https://rustup.rs) (1.88 or newer), for your user
+   only:
+   ```bash
+   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+   ```
+   A C compiler and linker are needed too: on Debian/Ubuntu
+   `sudo apt install build-essential`, on macOS `xcode-select --install`.
+2. **Build**:
    ```bash
    git clone https://github.com/blantonl/p25-survey
    cd p25-survey
@@ -83,8 +107,7 @@ There are no prebuilt binaries yet: build it with Rust (a few minutes).
    The program is `target/release/p25-survey`; copy it anywhere on your
    `PATH`, or `cargo install --path crates/p25-survey`.
 
-**Raspberry Pi**: a Pi 4 or 5 with a 64-bit OS, the same steps; the first
-build takes a while there.
+On a Raspberry Pi (4 or 5, 64-bit OS) the first build takes a while.
 
 ## How it works
 
