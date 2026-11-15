@@ -2,7 +2,11 @@
 //!   p25-survey info <recording>
 //!   p25-survey decode <recording> --freq MHz[,MHz…] [--seconds S]
 
+mod enrich;
 mod record;
+mod report;
+mod rows;
+mod rr;
 mod scan;
 
 use std::process::ExitCode;
@@ -22,6 +26,8 @@ const USAGE: &str = "usage:
   p25-survey scan <recording>... [--start MHz] [--stop MHz] [scan options]
       scan options: [--threshold dB] [--max-dwell S] [--output survey.json] [--hide-no-cc]
                     [--auto-gain [--gain-sweep 6,9,12,15,18]]  (a radio only)
+                    [--rr]  (look each control channel up in RadioReference)
+  p25-survey report <survey.json> [--rr]   (the reports again; --rr: look it up now)
   p25-survey radios
 (a recording is a SigMF .sigmf-meta / .sigmf-data, or its name without either)";
 
@@ -33,6 +39,7 @@ fn main() -> ExitCode {
         Some("detect") if args.len() >= 2 => detect(&args[1], &args[2..]),
         Some("scan") => scan::scan(&args[1..]),
         Some("radios") => scan::radios(),
+        Some("report") if args.len() >= 2 => report_cmd(&args[1], &args[2..]),
         _ => {
             eprintln!("{USAGE}");
             return ExitCode::from(2);
@@ -80,6 +87,61 @@ fn info(path: &str) -> Result<(), String> {
         second += 1;
     }
     Ok(())
+}
+
+/// Log in to RadioReference: asked for every time, never stored.
+pub(crate) fn rr_login() -> Result<rr::Client, String> {
+    use std::io::Write;
+    println!("RadioReference login (not stored)");
+    print!("  Username: ");
+    std::io::stdout().flush().map_err(|e| e.to_string())?;
+    let mut user = String::new();
+    std::io::stdin().read_line(&mut user).map_err(|e| e.to_string())?;
+    let password = rpassword::prompt_password("  Password: ").map_err(|e| e.to_string())?;
+    let client = rr::Client::new(user.trim(), &password, Box::new(rr::Https::new())).map_err(|e| e.to_string())?;
+    match client.user() {
+        Ok(u) => {
+            println!("  Logged in as {} (subscription expires {})", u.username, u.sub_expire_date);
+            Ok(client)
+        }
+        Err(e) if e.auth => Err(format!("RadioReference refused the login: {e}")),
+        Err(e) => Err(format!("RadioReference: {e}")),
+    }
+}
+
+/// Where a survey's reports go: beside it, .txt and -submissions.md.
+pub(crate) fn report_paths(survey: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
+    let stem = survey.with_extension("");
+    (stem.with_extension("txt"), std::path::PathBuf::from(format!("{}-submissions.md", stem.display())))
+}
+
+/// Write the text report, and the submissions report if anything was looked up.
+pub(crate) fn write_reports(survey: &std::path::Path, rows: &[rows::Row]) -> Result<(), String> {
+    let (txt, md) = report_paths(survey);
+    std::fs::write(&txt, report::text(rows)).map_err(|e| format!("{}: {e}", txt.display()))?;
+    println!("Report: {}", txt.display());
+    if rows.iter().any(|r| r.rr.is_some()) {
+        std::fs::write(&md, report::submissions(rows)).map_err(|e| format!("{}: {e}", md.display()))?;
+        println!("Submissions: {}", md.display());
+    }
+    Ok(())
+}
+
+/// `p25-survey report survey.json [--rr]`.
+fn report_cmd(path: &str, rest: &[String]) -> Result<(), String> {
+    let path = std::path::Path::new(path);
+    let mut rows = rows::read(path)?;
+    if rest.iter().any(|a| a == "--rr") {
+        let client = rr_login()?;
+        let mut n = 0;
+        for r in rows.iter_mut().filter(|r| r.is_control()) {
+            r.rr = Some(enrich::enrich(r, &client));
+            n += 1;
+        }
+        rows::write(path, &rows)?;
+        println!("Looked up {n} control channel(s); {} updated.", path.display());
+    }
+    write_reports(path, &rows)
 }
 
 /// The channels that stand out in a look at a recording (the scan's first step).

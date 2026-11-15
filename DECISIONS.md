@@ -220,6 +220,30 @@ Live, 700 MHz (2026-11-15): 6: 71 %, 9: 97 %, 12: 99 %, 15: 80 %, 18: 60 %:
 18; nothing clipped. The sweep adds 5 × 3.25 s to each hop with control
 channels.
 
+## 2026-11-15 — RadioReference and the reports
+
+The same four SOAP calls, matching rules and enrichment record (`rr`, field
+for field) as the Python version's radioreference.py and enrich.py, so either
+reads the other's records: system by WACN/SYSID (several RR systems can share
+one), site by RFSS/site number with the NAC to choose between subsystems, the
+control channel's frequency against the site's, the NAC, and the neighbours
+against the roster. HTTPS through ureq (rustls: no system TLS library), XML
+through roxmltree. The login is asked for at the start of every run (the
+password without echo) and never stored; answers are cached for the run.
+
+Reports and enrichment work from the records as written (ours or the Python
+version's), so `p25-survey report survey.json [--rr]` renders them again, or
+looks a survey up after the fact. The text report keeps copies, voice and
+conventional P25 and the rest apart from the control channels (the Python
+version counted any record with a NAC as a control channel). The submissions
+report has the Python version's sections.
+
+The radio's clock is taken from the control channels' carrier offsets as the
+CQPSK receiver measured them (decode 50 % or better; median, IQR), not from
+RR: base stations are GPS-disciplined, and RR's frequencies are on the
+raster, so the Python version's offsets against RR were nearly always 0. Live
+(Airspy Mini): +0.81 ppm, IQR 0.21, over 21 control channels on two bands.
+
 ## 2026-11-15 — License
 
 GPL-3.0-or-later, as the Python version. That was required there by op25;

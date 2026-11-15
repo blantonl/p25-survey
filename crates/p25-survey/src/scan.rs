@@ -16,6 +16,7 @@ use survey_radio::sigmf::{Reader, Recording};
 use survey_radio::{Gain, Radio};
 
 use crate::record::{to_json, verdict_str};
+use crate::rows::Row;
 
 /// Where the samples come from.
 enum Source {
@@ -169,10 +170,14 @@ pub fn scan(args: &[String]) -> Result<(), String> {
             return Err("--gain-sweep: at least two gains".into());
         }
     }
-    let mut out_file = match crate::opt(rest, "--output") {
-        Some(p) => Some(BufWriter::new(File::create(p).map_err(|e| format!("{p}: {e}"))?)),
+    let out_path = crate::opt(rest, "--output").map(std::path::PathBuf::from);
+    // Log in before scanning, so a wrong password doesn't cost a scan.
+    let rr = if rest.iter().any(|a| a == "--rr") { Some(crate::rr_login()?) } else { None };
+    let mut out_file = match &out_path {
+        Some(p) => Some(BufWriter::new(File::create(p).map_err(|e| format!("{}: {e}", p.display()))?)),
         None => None,
     };
+    let mut rows: Vec<Row> = Vec::new();
     let hide = rest.iter().any(|a| a == "--hide-no-cc");
 
     println!(
@@ -225,17 +230,37 @@ pub fn scan(args: &[String]) -> Result<(), String> {
         for o in out.drain(..) {
             match o {
                 Output::Hop { index, center_hz } => {
-                    flush(&mut records, &mut written, &hops, hide, (source.name(), gain_number(&source, user_gain)), out_file.as_mut())?;
+                    flush(
+                        &mut records,
+                        &mut written,
+                        &hops,
+                        hide,
+                        (source.name(), gain_number(&source, user_gain)),
+                        rr.as_ref(),
+                        &mut rows,
+                        out_file.as_mut(),
+                    )?;
                     println!("\nhop {} of {} at {:.4} MHz", index + 1, hops.len(), center_hz / 1e6);
                 }
                 Output::Candidates { found, .. } => println!("  {} candidate(s)", found.len()),
                 Output::Record(r) => records.push(*r),
                 Output::GainSweep(sw) => {
-                    flush(&mut records, &mut written, &hops, hide, (source.name(), gain_number(&source, user_gain)), out_file.as_mut())?;
+                    flush(
+                        &mut records,
+                        &mut written,
+                        &hops,
+                        hide,
+                        (source.name(), gain_number(&source, user_gain)),
+                        rr.as_ref(),
+                        &mut rows,
+                        out_file.as_mut(),
+                    )?;
                     print_sweep(&sw);
                     sweeps.push(*sw);
                 }
-                Output::Done => flush(&mut records, &mut written, &hops, hide, (source.name(), gain_number(&source, user_gain)), out_file.as_mut())?,
+                Output::Done => {
+                    flush(&mut records, &mut written, &hops, hide, (source.name(), gain_number(&source, user_gain)), rr.as_ref(), &mut rows, out_file.as_mut())?
+                }
             }
         }
     }
@@ -254,6 +279,12 @@ pub fn scan(args: &[String]) -> Result<(), String> {
     );
     if !sweeps.is_empty() {
         print_bands(&sweeps);
+    }
+    if let Some(c) = crate::report::clock(&rows) {
+        println!("Radio clock: {:+.2} ppm ({} control channels, consistency {})", c.median_ppm, c.n, c.consistency);
+    }
+    if let Some(p) = &out_path {
+        crate::write_reports(p, &rows)?;
     }
     if let Source::Radio(r) = &source {
         let lost = r.dropped();
@@ -341,13 +372,17 @@ pub fn radios() -> Result<(), String> {
     Ok(())
 }
 
-/// Mark copies over every record so far, then print and write the new ones.
+/// Mark copies over every record so far, then print the new ones, look them
+/// up in RR, and write them.
+#[allow(clippy::too_many_arguments)]
 fn flush(
     records: &mut [Record],
     written: &mut usize,
     hops: &[f64],
     hide: bool,
     (driver, gain_db): (&str, Option<f64>),
+    rr: Option<&crate::rr::Client>,
+    rows: &mut Vec<Row>,
     file: Option<&mut BufWriter<File>>,
 ) -> Result<(), String> {
     mark_copies(records, hops);
@@ -359,14 +394,43 @@ fn flush(
             println!("{}", row(r));
         }
     }
+    let mut new_rows: Vec<Row> =
+        new.iter().map(|r| serde_json::from_value(to_json(r, driver, gain_db)).map_err(|e| e.to_string())).collect::<Result<_, _>>()?;
+    if let Some(client) = rr {
+        for row in new_rows.iter_mut().filter(|r| r.is_control()) {
+            let e = crate::enrich::enrich(row, client);
+            println!("    {}  {}", crate::rows::mhz(row.freq_hz), rr_summary(&e));
+            row.rr = Some(e);
+        }
+    }
     if let Some(f) = file {
-        for r in new {
-            writeln!(f, "{}", to_json(r, driver, gain_db)).map_err(|e| e.to_string())?;
+        for r in &new_rows {
+            writeln!(f, "{}", serde_json::to_string(r).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
         }
         f.flush().map_err(|e| e.to_string())?;
     }
+    rows.extend(new_rows);
     *written = records.len();
     Ok(())
+}
+
+/// What RR made of a control channel, in a few words.
+fn rr_summary(e: &crate::enrich::Enrichment) -> String {
+    if !e.system_match {
+        return e.notes.first().cloned().unwrap_or_else(|| "not in RR".into());
+    }
+    let name = e.rr_system_name.clone().unwrap_or_default();
+    if !e.site_match {
+        return format!("RR: {name}, {}", if e.ambiguous_site { "site ambiguous" } else { "NEW SITE" });
+    }
+    let mut s = format!("RR: {name} / {}", e.rr_site_description.clone().unwrap_or_default());
+    if !e.cc_freq_in_db {
+        s += ", FREQUENCY NOT LISTED";
+    }
+    if !e.neighbors_decoded_not_in_rr.is_empty() {
+        s += &format!(", {} neighbour(s) not in RR", e.neighbors_decoded_not_in_rr.len());
+    }
+    s
 }
 
 /// One line per candidate.

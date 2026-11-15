@@ -9,17 +9,23 @@ secondary control channels, cross-referenced against RadioReference.
 (`p25-survey scan`): every control channel op25 finds on the
 [corpus](corpus/README.md), and more, with their identity, band plan,
 neighbours and secondary control channels; copies (images,
-intermodulation) marked; gain advice per band (`--auto-gain`); records the
-Python version's reports read. Not yet: RadioReference and the reports,
-RTL-SDR and HackRF.
+intermodulation) marked; gain advice per band (`--auto-gain`); the radio's
+clock error; RadioReference cross-reference (`--rr`) with the text and
+submissions reports. Not yet: RTL-SDR and HackRF.
 
 ## Run
 
 ```bash
 p25-survey radios
 p25-survey scan --radio airspy --start 851 --stop 869 --gain 14 \
-    --hide-no-cc --output survey-800.json
+    --rr --hide-no-cc --output survey-800.json
+# survey-800.json (records), survey-800.txt (report),
+# survey-800-submissions.md (what RadioReference lacks)
+p25-survey report survey-800.json --rr      # look a saved survey up again
 ```
+
+`--rr` asks for a RadioReference login (a premium subscription) every run
+and never stores it.
 
 An Airspy needs libairspy (`apt install libairspy0`, `brew install airspy`);
 nothing else does.

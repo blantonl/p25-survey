@@ -16,6 +16,11 @@ survey-core = { path = "../survey-core" }
 survey-radio.workspace = true
 num-complex.workspace = true
 serde_json.workspace = true
+serde.workspace = true
+# RadioReference's SOAP API: HTTPS (rustls, no system TLS), XML, a password prompt.
+ureq = "3"
+roxmltree = "0.21"
+rpassword = "7"
 
 [dev-dependencies]
 serde_json.workspace = true
