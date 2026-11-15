@@ -374,12 +374,20 @@ control channels in that hop (769.61875, 772.99375). The detector was right;
 the gain was too low for that antenna.
 
 `--auto-gain` advised a higher gain (18) but couldn't help: it only measures
-the control channels already found. Now, when a hop's sweep advises more
-than the scan's gain, the hop is looked at again at the advised gain, and
-what wasn't seen or didn't decode (no P25 frame, partial) is decoded there;
+the control channels already found. Now each hop is looked at again after
+its sweep, at the highest gain that decodes its control channels as well as
+the best (within the same 2 %), when that is above the scan's gain; what
+wasn't seen or didn't decode (no P25 frame, partial) is decoded there;
 complete control channels and P25 traffic aren't. A channel decoded twice
 keeps its newest record. The survey's gain is restored for the next hop.
 `tests/relook.rs` plays the two recordings as one radio at two gains.
+
+First it looked again at the sweep's advice (the lowest such gain). On
+hqz's 800 MHz that missed two control channels: the only one found in the
+hop was strong (Balch Springs, as good from preset 12 up), so the advice
+was 12, under the scan's 14, and there was no second look. Its job is to see
+weak channels, so it takes the most gain that costs the found ones nothing:
+21 there, which found both.
 
 The Airspy/HydraSDR grid goes up to 21 (it stopped at 18, which won both
 hqz sweeps), and the advice says so when the best gain is the highest tried.

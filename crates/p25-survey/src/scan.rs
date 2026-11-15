@@ -454,7 +454,7 @@ pub fn scan(args: &[String]) -> Result<(), String> {
                 Output::Record(r) => records.push(*r),
                 Output::Relook { gain, .. } => {
                     relooked = true;
-                    println!("  looking again at gain {gain} (the sweep's advice, above the scan's)");
+                    println!("  looking again at gain {gain} (the most that costs the control channels found nothing)");
                 }
                 Output::GainSweep(sw) => {
                     flush(

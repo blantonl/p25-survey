@@ -122,8 +122,9 @@ decodes; near a strong local signal the top presets can overload the front
 end and make copies of it, while a weak antenna may need them. The sweep
 scores each preset by the control messages each channel decodes there,
 against that channel's best, and advises the lowest within 2 % of the best.
-If that is above the scan's `--gain`, the tuning is looked at again at it,
-for control channels too weak to show at the scan's gain.
+The tuning is then looked at again at the highest preset that decodes the
+channels found as well as the best (if above the scan's `--gain`), for
+control channels too weak to show at the scan's gain.
 
 For an antenna that needs more than preset 21 (a recorder on the same radio
 running at, say, LNA 14, MIX 15, IF 13), scan at those stages with `--lna`,

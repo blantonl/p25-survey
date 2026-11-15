@@ -4,8 +4,8 @@
 //! Tune → (caller retunes, says tuned) → Settle: drop samples while the radio
 //! settles → Look: find the channels that stay on → Dwell: decode every
 //! candidate at once, each until it is complete, isn't P25, or runs out of
-//! time → a Record per candidate → [gain sweep → look again at the advised
-//! gain, if higher] → next hop
+//! time → a Record per candidate → [gain sweep → look again at the highest
+//! gain that costs the control channels found nothing, if higher] → next hop
 //! ```
 //!
 //! All time is counted in samples, so a recording replayed faster than real
@@ -48,9 +48,10 @@ pub struct SurveyConfig {
     /// How long each gain is measured, seconds.
     pub sweep_s: f64,
     /// The gain the survey runs at, in the sweep's units (None: not one of
-    /// them, e.g. the radio's AGC). When a hop's sweep advises more than this,
-    /// the hop is looked at again at the advised gain: channels too weak to
-    /// stand out, or to decode, at the survey's gain get their chance.
+    /// them, e.g. the radio's AGC). When a hop's sweep finds a higher gain
+    /// that decodes its control channels as well as the best
+    /// ([`GainSweep::relook`]), the hop is looked at again at it: channels too
+    /// weak to stand out, or to decode, at the survey's gain get their chance.
     pub start_gain: Option<f32>,
     /// Channels already surveyed (a resumed survey): not decoded again.
     pub done_hz: Vec<f64>,
@@ -161,6 +162,19 @@ impl GainSweep {
     pub fn best(&self) -> Option<f32> {
         best_gain(&self.steps.iter().map(|s| s.gain).collect::<Vec<_>>(), &self.scores())
     }
+
+    /// The gain to look at the hop again at: the highest within 2 % of the
+    /// best score. Looking again is for channels too weak to show at the
+    /// survey's gain, so it takes as much gain as costs the channels already
+    /// found nothing (a strong one decodes as well at any of them).
+    pub fn relook(&self) -> Option<f32> {
+        let scores = self.scores();
+        let top = scores.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        if top.is_nan() || top <= 0.0 {
+            return None;
+        }
+        self.steps.iter().zip(&scores).filter(|&(_, &s)| s >= top - GAIN_MARGIN).map(|(st, _)| st.gain).max_by(f32::total_cmp)
+    }
 }
 
 /// How a candidate ended.
@@ -248,8 +262,9 @@ pub enum Output {
     },
     Record(Box<Record>),
     GainSweep(Box<GainSweep>),
-    /// Hop `index` is looked at again at `gain` (its sweep's advice, above
-    /// the survey's): the candidates and records that follow are that look's.
+    /// Hop `index` is looked at again at `gain` (the highest its sweep found
+    /// costs its control channels nothing, above the survey's): the
+    /// candidates and records that follow are that look's.
     Relook {
         index: usize,
         gain: f32,
@@ -497,9 +512,9 @@ impl Survey {
                 self.pending.push_back(Command::Gain(Some(next)));
             }
             None => {
-                let advised = sw.result.best();
+                let relook = sw.result.relook();
                 out.push(Output::GainSweep(Box::new(sw.result.clone())));
-                match (advised, self.cfg.start_gain) {
+                match (relook, self.cfg.start_gain) {
                     (Some(a), Some(s)) if a > s + 0.5 => {
                         self.relooking = true;
                         self.state = State::Relook;
@@ -740,6 +755,25 @@ mod tests {
         let s = gain_scores(&tsbks);
         assert_eq!(best_gain(&gains, &s), Some(12.0));
         assert_eq!(best_gain(&gains, &gain_scores(&[vec![0], vec![0]])), None);
+    }
+
+    #[test]
+    fn the_second_look_takes_as_much_gain_as_costs_nothing() {
+        let step = |gain, tsbks: Vec<u32>| GainStep { gain, tsbks, clipped: 0.0 };
+        // A strong channel, as good from 12 up: advised 12, looked at again at 21.
+        let strong = GainSweep {
+            hop: 0,
+            center_hz: 0.0,
+            freqs: vec![0.0],
+            steps: vec![step(9.0, vec![0]), step(12.0, vec![77]), step(15.0, vec![78]), step(21.0, vec![78])],
+            seconds: 3.0,
+        };
+        assert_eq!((strong.best(), strong.relook()), (Some(12.0), Some(21.0)));
+        // One that suffers at the top: not there.
+        let hot = GainSweep { steps: vec![step(12.0, vec![50]), step(15.0, vec![100]), step(18.0, vec![90])], ..strong.clone() };
+        assert_eq!((hot.best(), hot.relook()), (Some(15.0), Some(15.0)));
+        let none = GainSweep { steps: vec![step(12.0, vec![0]), step(15.0, vec![0])], ..strong };
+        assert_eq!(none.relook(), None);
     }
 
     #[test]
