@@ -342,7 +342,22 @@ A neighbour heard both as a TSBK (with its status bits) and as an MBT
 (without) is one neighbour: what one form lacks the other keeps, or the
 two would alternate as "new" and the channel never go quiet.
 
-## 2026-11-15 — License
+## 2026-11-15 — License: MIT OR Apache-2.0
 
-GPL-3.0-or-later, as the Python version. That was required there by op25;
-here nothing requires it, and it can be revisited before the first release.
+The Python version was GPL-3.0-or-later because op25 is. Nothing here
+requires that: no op25 or Trunk Recorder code, and every dependency is MIT,
+Apache-2.0 or ISC (the radio libraries, loaded at run time and not shipped,
+are BSD or GPL). So the Rust ecosystem's usual dual license, MIT OR
+Apache-2.0 (the latter with its patent grant), copyright RadioReference.com
+LLC: anyone may build the decoder or the survey into their own software,
+open or not, GPL projects included. Versions 0.4.x and earlier stay
+GPL-3.0-or-later.
+
+## 2026-11-15 — 0.5.0 replaces the Python version
+
+In the same repository (blantonl/p25-survey), as 0.5.0: one merge that
+brings in this history and removes the Python files, so the Python commits,
+tags and releases stay where they are; the `python` branch keeps the 0.4.x
+line. Its CLI is kept where it can be (`--sdr` and `--sample-rate` still
+work; `--device-args` says what replaced it) and its survey files read both
+ways.

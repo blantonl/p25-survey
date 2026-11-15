@@ -1,0 +1,124 @@
+# Airspy gain preset tables
+
+`--gain N` for an Airspy (or a HydraSDR, whose library grew from
+libairspy) calls `airspy_set_linearity_gain(N)`. That function is a lookup
+into three pre-tuned tables (LNA, MIX, IF/VGA), one entry per preset value
+0–21; `--sensitivity N` looks up the other preset's.
+
+This page snapshots those tables so you can predict what `--gain N`
+actually programs into the device, and what to give `--lna`, `--mix` and
+`--if` for per-stage control (see "Per-stage control" below).
+
+> **Note — the source arrays appear backwards, but the API is not.**
+> - Preset **0** = LNA off, mixer off, IF/VGA at minimum (lowest gain).
+> - Preset **21** = all stages at maximum (highest gain).
+>> Higher preset value → more gain. The raw C arrays in `airspy.c` seem
+> reversed because they are stored highest-first. The driver inverts the
+> index before lookup using `GAIN_COUNT - 1 - N`. The tables on this
+> page reflect the corrected mappings as experienced by the user.
+
+Per-stage register ranges (from `airspy_rx.c`): LNA 0–14, MIX 0–15,
+IF/VGA 0–15. Each row below is what the preset programs into those
+three stages.
+
+## Linearity preset (default for `--gain N`)
+
+Tuned to favor IMD performance over raw sensitivity. Best general-purpose
+preset for crowded bands like 700/800 MHz public-safety.
+
+| Preset | LNA | MIX | IF/VGA |
+|-------:|----:|----:|-------:|
+|  0     |  0  |  0  |  4     |
+|  1     |  0  |  0  |  5     |
+|  2     |  0  |  1  |  6     |
+|  3     |  0  |  1  |  7     |
+|  4     |  0  |  1  |  8     |
+|  5     |  0  |  1  |  9     |
+|  6     |  0  |  2  | 10     |
+|  7     |  1  |  2  | 10     |
+|  8     |  3  |  0  | 10     |
+|  9     |  5  |  0  | 10     |
+| 10     |  6  |  1  | 10     |
+| 11     |  8  |  0  | 10     |
+| 12     |  9  |  0  | 10     |
+| 13     |  8  |  5  | 10     |
+| 14     |  9  |  6  | 10     |
+| 15     |  9  |  6  | 11     |
+| 16     | 10  |  7  | 11     |
+| 17     | 12  |  8  | 11     |
+| 18     | 13  |  9  | 11     |
+| 19     | 14  | 11  | 11     |
+| 20     | 14  | 12  | 12     |
+| 21     | 14  | 12  | 13     |
+
+## Sensitivity preset
+
+Same 0–21 input range but tuned to maximize sensitivity at the cost of
+linearity. Useful for weak rural signals where IMD isn't the limiting
+factor. Select it with `--sensitivity N` instead of `--gain N`.
+
+| Preset | LNA | MIX | IF/VGA |
+|-------:|----:|----:|-------:|
+|  0     |  0  |  0  |  4     |
+|  1     |  1  |  0  |  4     |
+|  2     |  2  |  0  |  4     |
+|  3     |  3  |  0  |  4     |
+|  4     |  5  |  1  |  4     |
+|  5     |  6  |  2  |  4     |
+|  6     |  7  |  2  |  4     |
+|  7     |  8  |  3  |  4     |
+|  8     |  9  |  4  |  4     |
+|  9     |  9  |  4  |  5     |
+| 10     | 12  |  4  |  5     |
+| 11     | 12  |  7  |  5     |
+| 12     | 13  |  8  |  5     |
+| 13     | 14  |  9  |  5     |
+| 14     | 14  |  9  |  6     |
+| 15     | 14  | 10  |  7     |
+| 16     | 14  | 10  |  8     |
+| 17     | 14  | 11  |  9     |
+| 18     | 14  | 12  | 10     |
+| 19     | 14  | 12  | 11     |
+| 20     | 14  | 12  | 12     |
+| 21     | 14  | 12  | 13     |
+
+## Per-stage control: `--lna`, `--mix`, `--if`
+
+If neither preset gives you what you want, set the three stages directly
+(the LNA and mixer AGC go off):
+
+```
+p25-survey scan --start 851 --stop 869 --lna 10 --mix 15 --if 12
+```
+
+A stage not given takes linearity 14's value (LNA 9, MIX 6, IF 10).
+`--gain` is ignored when any is given. Use this when:
+
+- You're chasing a specific BER curve and want finer granularity than 22
+  preset rows.
+- You're characterizing front-end overload — pin LNA low and sweep MIX
+  to find where IMD starts mattering.
+- A specific Airspy / antenna combination has a known sweet spot that
+  doesn't map cleanly onto either preset's diagonal.
+
+`p25-survey gains` (or `scan --list-gains`) prints the radio's gain
+settings.
+
+## Where these numbers come from
+
+Tables snapshot from
+[`airspy/airspyone_host` `libairspy/src/airspy.c`](https://github.com/airspy/airspyone_host/blob/master/libairspy/src/airspy.c)
+— search for `airspy_linearity_*_gains` and `airspy_sensitivity_*_gains`.
+Last upstream change to these arrays predates 2024-01; recent commits
+to that file have been thread/USB fixes only. Re-check upstream if
+you suspect a tuning change has shipped.
+
+## Related: how `--auto-gain` uses these
+
+The default gain sweep grid for an Airspy is 6, 9, 12, 15, 18 (linearity
+presets; `--gain-sweep` for another). That spans "cold" (preset 6: LNA 0,
+MIX 2, IF 10) to "hot" (preset 18: LNA 13, MIX 9, IF 11): below 6 little
+decodes, and above 18 a strong local signal tends to overload the front end
+and make copies of itself. The sweep scores each preset by the control
+messages each channel decodes there, against that channel's best, and
+advises the lowest within 2 % of the best.
