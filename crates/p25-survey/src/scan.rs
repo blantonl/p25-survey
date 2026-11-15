@@ -1,36 +1,139 @@
-//! `p25-survey scan <recording>...`: the survey, on recordings. Each
-//! recording is a hop; when the survey asks to tune to a centre, the
-//! recording made there is played. The four 800 MHz recordings in the corpus
-//! make a sweep of 851-869 MHz.
+//! `p25-survey scan`: the survey, on a radio or on recordings.
+//!
+//! On recordings each one is a hop: when the survey asks to tune to a
+//! centre, the recording made there is played (the four 800 MHz recordings in
+//! the corpus make a sweep of 851-869 MHz). On a radio the hops are planned
+//! to cover --start to --stop.
 
 use std::fs::File;
 use std::io::{BufWriter, Write};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
+use num_complex::Complex32;
 use survey_core::survey::{Command, Output, Record, Survey, SurveyConfig, Verdict, mark_copies};
+use survey_radio::airspy::Airspy;
 use survey_radio::sigmf::{Reader, Recording};
+use survey_radio::{Gain, Radio};
 
 use crate::record::{to_json, verdict_str};
+
+/// Where the samples come from.
+enum Source {
+    Recordings { recs: Vec<Recording>, reader: Option<Reader> },
+    Radio(Box<dyn Radio>),
+}
+
+/// The next samples, or None when they've run out (a recording ended).
+enum Read {
+    Samples(usize),
+    Nothing,
+    Ended,
+}
+
+impl Source {
+    fn rate_hz(&self) -> f64 {
+        match self {
+            Source::Recordings { recs, .. } => recs[0].rate_hz,
+            Source::Radio(r) => r.rate_hz(),
+        }
+    }
+
+    fn name(&self) -> &'static str {
+        match self {
+            Source::Recordings { .. } => "file",
+            Source::Radio(_) => "airspy",
+        }
+    }
+
+    fn tune(&mut self, hz: f64) -> Result<(), String> {
+        match self {
+            Source::Recordings { recs, reader } => {
+                let r = recs.iter().find(|r| r.center_hz == hz).ok_or("no recording at a hop's centre")?;
+                *reader = Some(r.reader().map_err(|e| e.to_string())?);
+                Ok(())
+            }
+            Source::Radio(r) => r.tune(hz).map_err(|e| e.to_string()),
+        }
+    }
+
+    fn read(&mut self, block: &mut Vec<Complex32>) -> Result<Read, String> {
+        match self {
+            Source::Recordings { reader, .. } => match reader.as_mut() {
+                Some(rd) => match rd.read(block, 1 << 18).map_err(|e| e.to_string())? {
+                    0 => {
+                        *reader = None;
+                        Ok(Read::Ended)
+                    }
+                    n => Ok(Read::Samples(n)),
+                },
+                None => Ok(Read::Ended),
+            },
+            Source::Radio(r) => match r.read(block, Duration::from_secs(2)).map_err(|e| e.to_string())? {
+                0 => Ok(Read::Nothing),
+                n => Ok(Read::Samples(n)),
+            },
+        }
+    }
+}
+
+/// `--gain`: Airspy linearity preset 0-21 (or `auto`); `--sensitivity N`
+/// for the sensitivity presets instead.
+fn gain(rest: &[String]) -> Result<Gain, String> {
+    if let Some(s) = crate::opt(rest, "--sensitivity") {
+        return s.parse().map(Gain::Sensitivity).map_err(|_| "--sensitivity: 0-21".into());
+    }
+    match crate::opt(rest, "--gain") {
+        None => Ok(Gain::Linearity(14)),
+        Some("auto") => Ok(Gain::Auto),
+        Some(g) => g.parse().map(Gain::Linearity).map_err(|_| "--gain: 0-21 (Airspy linearity preset) or auto".into()),
+    }
+}
+
+/// `--radio airspy` or `airspy:SERIAL` (hex, as `p25-survey radios` lists).
+fn open_radio(spec: &str, rest: &[String]) -> Result<Box<dyn Radio>, String> {
+    let (kind, serial) = spec.split_once(':').map_or((spec, None), |(k, s)| (k, Some(s)));
+    let serial = serial.map(|s| u64::from_str_radix(s.trim_start_matches("0x"), 16).map_err(|_| format!("--radio: serial {s}?"))).transpose()?;
+    let max_rate = crate::opt(rest, "--rate").map_or(Ok(6e6), |r| r.parse::<f64>().map(|m| m * 1e6).map_err(|_| "--rate: MS/s".to_string()))?;
+    match kind {
+        "airspy" => Ok(Box::new(Airspy::open(serial, max_rate, gain(rest)?).map_err(|e| e.to_string())?)),
+        _ => Err(format!("--radio: {kind}? (airspy)")),
+    }
+}
 
 pub fn scan(args: &[String]) -> Result<(), String> {
     let paths: Vec<&String> = args.iter().take_while(|a| !a.starts_with("--")).collect();
     let rest = &args[paths.len()..];
-    if paths.is_empty() {
-        return Err("scan: which recordings?".into());
-    }
-    let mut recs: Vec<Recording> = paths.iter().map(|p| Recording::open(p).map_err(|e| e.to_string())).collect::<Result<_, _>>()?;
-    recs.sort_by(|a, b| a.center_hz.total_cmp(&b.center_hz));
-    let rate = recs[0].rate_hz;
-    if recs.iter().any(|r| r.rate_hz != rate) {
-        return Err("scan: the recordings' sample rates differ".into());
-    }
     let num = |name: &str| crate::opt(rest, name).map(|v| v.parse::<f64>().map_err(|_| format!("{name}: a number"))).transpose();
     let usable = 0.85;
-    let span = (recs[0].center_hz - rate * usable / 2.0, recs[recs.len() - 1].center_hz + rate * usable / 2.0);
-    let range = (num("--start")?.map_or(span.0, |m| m * 1e6), num("--stop")?.map_or(span.1, |m| m * 1e6));
+    let (mut source, range, hops) = match (crate::opt(rest, "--radio"), paths.is_empty()) {
+        (Some(spec), true) => {
+            let (Some(start), Some(stop)) = (num("--start")?, num("--stop")?) else {
+                return Err("scan: --start and --stop (MHz) with a radio".into());
+            };
+            (Source::Radio(open_radio(spec, rest)?), (start * 1e6, stop * 1e6), None)
+        }
+        (None, false) => {
+            let mut recs: Vec<Recording> = paths.iter().map(|p| Recording::open(p).map_err(|e| e.to_string())).collect::<Result<_, _>>()?;
+            recs.sort_by(|a, b| a.center_hz.total_cmp(&b.center_hz));
+            let rate = recs[0].rate_hz;
+            if recs.iter().any(|r| r.rate_hz != rate) {
+                return Err("scan: the recordings' sample rates differ".into());
+            }
+            let span = (recs[0].center_hz - rate * usable / 2.0, recs[recs.len() - 1].center_hz + rate * usable / 2.0);
+            let range = (num("--start")?.map_or(span.0, |m| m * 1e6), num("--stop")?.map_or(span.1, |m| m * 1e6));
+            let hops = recs.iter().map(|r| r.center_hz).collect();
+            (Source::Recordings { recs, reader: None }, range, Some(hops))
+        }
+        _ => return Err("scan: recordings, or --radio, not both".into()),
+    };
+    let rate = source.rate_hz();
     let mut cfg = SurveyConfig::new(rate, range);
     cfg.usable = usable;
-    cfg.hops = recs.iter().map(|r| r.center_hz).collect();
+    match hops {
+        Some(h) => cfg.hops = h,
+        // A live radio's queue and USB transfers still hold the old frequency.
+        None => cfg.settle_s = 0.25,
+    }
     if let Some(t) = num("--threshold")? {
         cfg.detect.threshold_db = t;
     }
@@ -44,16 +147,20 @@ pub fn scan(args: &[String]) -> Result<(), String> {
     let hide = rest.iter().any(|a| a == "--hide-no-cc");
 
     println!(
-        "Scanning {:.4}-{:.4} MHz: {} recording(s) at {:.1} MS/s, threshold {:.1} dB",
+        "Scanning {:.4}-{:.4} MHz in {} hop(s), {} at {:.1} MS/s, threshold {:.1} dB",
         range.0 / 1e6,
         range.1 / 1e6,
-        recs.len(),
+        cfg.hops.len(),
+        match &source {
+            Source::Recordings { recs, .. } => format!("{} recording(s)", recs.len()),
+            Source::Radio(_) => "airspy".into(),
+        },
         rate / 1e6,
         cfg.detect.threshold_db
     );
     let t0 = Instant::now();
     let mut survey = Survey::new(cfg);
-    let mut reader: Option<Reader> = None;
+    let hops = survey.config().hops.clone();
     let mut block = Vec::new();
     let mut out = Vec::new();
     let mut air = 0u64;
@@ -61,36 +168,31 @@ pub fn scan(args: &[String]) -> Result<(), String> {
     // A hop's records are written when the hop ends: a copy can't be told
     // from the channel it copies until both are in.
     let mut written = 0;
-    let hops = survey.config().hops.clone();
     loop {
         if let Some(Command::Tune(c)) = survey.command() {
-            let r = recs.iter().find(|r| r.center_hz == c).ok_or("no recording at a hop's centre")?;
-            reader = Some(r.reader().map_err(|e| e.to_string())?);
+            source.tune(c)?;
             survey.tuned(c, &mut out);
         }
         if survey.is_done() {
             break;
         }
-        let n = match reader.as_mut() {
-            Some(rd) => rd.read(&mut block, 1 << 18).map_err(|e| e.to_string())?,
-            None => 0,
-        };
-        if n == 0 {
-            reader = None;
-            survey.end_of_samples(&mut out);
-        } else {
-            air += n as u64;
-            survey.push(&block, &mut out);
+        match source.read(&mut block)? {
+            Read::Samples(n) => {
+                air += n as u64;
+                survey.push(&block, &mut out);
+            }
+            Read::Nothing => eprintln!("p25-survey: no samples from the radio for 2 s"),
+            Read::Ended => survey.end_of_samples(&mut out),
         }
         for o in out.drain(..) {
             match o {
                 Output::Hop { index, center_hz } => {
-                    flush(&mut records, &mut written, &hops, hide, out_file.as_mut())?;
-                    println!("\nhop {} at {:.4} MHz", index + 1, center_hz / 1e6);
+                    flush(&mut records, &mut written, &hops, hide, source.name(), out_file.as_mut())?;
+                    println!("\nhop {} of {} at {:.4} MHz", index + 1, hops.len(), center_hz / 1e6);
                 }
                 Output::Candidates { found, .. } => println!("  {} candidate(s)", found.len()),
                 Output::Record(r) => records.push(*r),
-                Output::Done => flush(&mut records, &mut written, &hops, hide, out_file.as_mut())?,
+                Output::Done => flush(&mut records, &mut written, &hops, hide, source.name(), out_file.as_mut())?,
             }
         }
     }
@@ -107,11 +209,31 @@ pub fn scan(args: &[String]) -> Result<(), String> {
         air as f64 / rate,
         t0.elapsed().as_secs_f64()
     );
+    if let Source::Radio(r) = &source {
+        let lost = r.dropped();
+        if lost > 0 {
+            println!("{lost} samples lost ({:.2} % of the air): the computer didn't keep up.", 100.0 * lost as f64 / (air + lost) as f64);
+        }
+    }
+    Ok(())
+}
+
+/// `p25-survey radios`: the radios plugged in.
+pub fn radios() -> Result<(), String> {
+    match survey_radio::airspy::list() {
+        Ok(s) if s.is_empty() => println!("No Airspy plugged in."),
+        Ok(s) => {
+            for serial in s {
+                println!("airspy:{serial:016X}");
+            }
+        }
+        Err(e) => println!("Airspy: {e}"),
+    }
     Ok(())
 }
 
 /// Mark copies over every record so far, then print and write the new ones.
-fn flush(records: &mut [Record], written: &mut usize, hops: &[f64], hide: bool, file: Option<&mut BufWriter<File>>) -> Result<(), String> {
+fn flush(records: &mut [Record], written: &mut usize, hops: &[f64], hide: bool, driver: &str, file: Option<&mut BufWriter<File>>) -> Result<(), String> {
     mark_copies(records, hops);
     let new = &records[*written..];
     let mut sorted: Vec<&Record> = new.iter().collect();
@@ -123,7 +245,7 @@ fn flush(records: &mut [Record], written: &mut usize, hops: &[f64], hide: bool, 
     }
     if let Some(f) = file {
         for r in new {
-            writeln!(f, "{}", to_json(r, "file")).map_err(|e| e.to_string())?;
+            writeln!(f, "{}", to_json(r, driver)).map_err(|e| e.to_string())?;
         }
         f.flush().map_err(|e| e.to_string())?;
     }
@@ -149,7 +271,7 @@ fn row(r: &Record) -> String {
         },
         r.decode_rate().map_or(String::new(), |d| format!("decode {:.0} %", 100.0 * d)),
     );
-    if matches!(r.verdict, Verdict::Complete | Verdict::Partial) {
+    if r.is_control() {
         line += &format!("  idens {} nbrs {} sec {}  {:.1} s", s.plan.len(), s.neighbors().count(), s.secondary().count(), r.dwell_s);
     }
     if let Some(c) = r.copy_of {

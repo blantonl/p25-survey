@@ -5,12 +5,23 @@ program: no GNU Radio, no op25, no Python. Scan a band with an SDR, find the
 P25 control channels, and log each site's identity, band plan, neighbours and
 secondary control channels, cross-referenced against RadioReference.
 
-**Status: early.** It surveys recordings end to end (`p25-survey scan`):
-on the [corpus](corpus/README.md) it finds every control channel op25 does,
-and more, with their identity, band plan, neighbours and secondary control
-channels, and writes records the Python version's reports read. Next:
-radios (Airspy first), then RadioReference and the reports. Until it runs on
-a radio, use the Python version.
+**Status: early.** It surveys a band with an Airspy, or recordings
+(`p25-survey scan`): every control channel op25 finds on the
+[corpus](corpus/README.md), and more, with their identity, band plan,
+neighbours and secondary control channels; copies (images,
+intermodulation) marked; records the Python version's reports read. Not yet:
+RTL-SDR and HackRF, the gain sweep, RadioReference and the reports.
+
+## Run
+
+```bash
+p25-survey radios
+p25-survey scan --radio airspy --start 851 --stop 869 --gain 14 \
+    --hide-no-cc --output survey-800.json
+```
+
+An Airspy needs libairspy (`apt install libairspy0`, `brew install airspy`);
+nothing else does.
 
 ## Layout
 

@@ -59,6 +59,7 @@ pub fn to_json(r: &Record, driver: &str) -> Value {
         // Not in the Python schema:
         "verdict": verdict_str(r.verdict),
         "level_db": round2(r.level_db),
+        "heard_hz": r.heard_hz as u64,
         "announced_hz": s.announced_hz(),
         "copy_of_hz": r.copy_of.map(|c| c as u64),
         "tsbks": r.tsbks,

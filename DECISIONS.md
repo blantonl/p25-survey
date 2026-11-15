@@ -137,9 +137,12 @@ look (0.35 s) each ~1 kHz bin's power is taken at its 20th percentile, so a
 carrier that dropped out at all reads low. Each raster channel's power (±4
 kHz) against the local floor (the median over ±150 kHz) is its level; a
 candidate is 4.5 dB or more over the floor, the strongest within two raster
-steps, and not up without a break for 25 kHz either side (something wide).
-Two control channels 25 kHz apart (859.7125 and 859.7375) both show, because
-the level drops to the floor between them. A threshold this low is cheap:
+steps, and not within 6 dB of its own level all the way 25 kHz either side
+(something wide is flat). An earlier rule ("over the noise for 25 kHz
+either side") lost Metrocrest 854.7875 live, among the skirts and a spur of a
+45 dB carrier 75 kHz below, though its peak stood 5 dB over all of them. Two
+control channels 25 kHz apart (859.7125 and 859.7375) both show, because the
+level drops to the floor between them. A threshold this low is cheap:
 candidates are decoded together and one that isn't P25 is dropped at 2 s.
 
 ## 2026-11-15 — When a candidate is done
@@ -170,6 +173,34 @@ level, announced frequency, copy, per-receiver counts) are at the top level,
 since it builds neighbours, band plan entries and the signal block from
 exactly their keys. A hop's records are written when the hop ends: a copy
 can't be told from what it copies until both are in.
+
+## 2026-11-15 — Airspy through libairspy, loaded at run time
+
+libairspy (a small C library, packaged everywhere) does the Airspy's USB and
+its real-to-I/Q conversion; it is loaded with libloading when an Airspy is
+opened, so the program builds and runs without it and needs it only to use
+one. Float I/Q at the highest rate up to 6 MS/s; the callback copies each
+block into a bounded queue (a full queue drops the block and counts it,
+rather than stall USB). A retune empties the queue, and live scans settle
+0.25 s for the transfers still in flight. `--gain` is the linearity preset
+(14 if not given, as the corpus was recorded), `--sensitivity` the other
+presets, `auto` the AGC.
+
+## 2026-11-15 — First live scans (dragon1, Airspy Mini, linearity 14)
+
+851-869 MHz in 28 s, 769-775 MHz in 25 s, keeping up with the radio on one
+core (about a third of it). 800 MHz: 20 control channels, every one the
+recordings had (Metrocrest 854.7875 only once the "wide" rule was fixed),
+and 859.6125 (BEE00/366 1-1). 700 MHz: 771.36875 is 58 dB here and makes
+copies of itself across the band (772.15625, 773.10625 at 30 dB, 773.18125,
+774.85), each decoding cleanly with its identity; all are marked copies. At
+linearity 9 the copies go but so do the weakest sites (771.98125, 772.19375,
+774.68125): the gain sweep is what settles that, per band.
+
+Copy rules learned live: a channel heard a raster step off its true
+frequency (859.29375 for 859.2875) takes the frequency it announces, and one
+that announces itself is never a copy (851.0875 is the exact mirror image of
+855.4125 about 853.25, and is a real site).
 
 ## 2026-11-15 — License
 

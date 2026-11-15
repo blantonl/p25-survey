@@ -16,9 +16,12 @@ use survey_radio::sigmf::Recording;
 const USAGE: &str = "usage:
   p25-survey info <recording>
   p25-survey decode <recording> --freq MHz[,MHz...] [--seconds S] [--json]
-  p25-survey detect <recording> [--at S] [--look S] [--threshold dB]
-  p25-survey scan <recording>... [--start MHz] [--stop MHz] [--threshold dB] [--max-dwell S]
-                  [--output survey.json] [--hide-no-cc]
+  p25-survey detect <recording> [--at S] [--look S] [--threshold dB] [--levels MHz,MHz]
+  p25-survey scan --radio airspy[:SERIAL] --start MHz --stop MHz [--gain 0-21|auto]
+                  [--sensitivity 0-21] [--rate MS/s] [scan options]
+  p25-survey scan <recording>... [--start MHz] [--stop MHz] [scan options]
+      scan options: [--threshold dB] [--max-dwell S] [--output survey.json] [--hide-no-cc]
+  p25-survey radios
 (a recording is a SigMF .sigmf-meta / .sigmf-data, or its name without either)";
 
 fn main() -> ExitCode {
@@ -28,6 +31,7 @@ fn main() -> ExitCode {
         Some("decode") if args.len() >= 2 => decode(&args[1], &args[2..]),
         Some("detect") if args.len() >= 2 => detect(&args[1], &args[2..]),
         Some("scan") => scan::scan(&args[1..]),
+        Some("radios") => scan::radios(),
         _ => {
             eprintln!("{USAGE}");
             return ExitCode::from(2);
@@ -98,6 +102,14 @@ fn detect(path: &str, rest: &[String]) -> Result<(), String> {
     rd.read(&mut block, (look * r.rate_hz) as usize).map_err(|e| e.to_string())?;
     det.push(&block);
     let half = r.rate_hz / 2.0 * 0.85;
+    if let Some(range) = opt(rest, "--levels") {
+        let (a, b) = range.split_once(',').ok_or("--levels: MHz,MHz")?;
+        let (a, b): (f64, f64) = (a.parse().map_err(|_| "--levels: MHz,MHz")?, b.parse().map_err(|_| "--levels: MHz,MHz")?);
+        for (f, l, p, fl) in det.levels(r.center_hz, a * 1e6, b * 1e6, &cfg) {
+            println!("  {:.5}  level {l:6.1}  power {p:6.1}  floor {fl:6.1}", f / 1e6);
+        }
+        return Ok(());
+    }
     let found = det.find(r.center_hz, r.center_hz - half, r.center_hz + half, &cfg);
     println!("{} channel(s) {:.1} dB or more over the floor, {:.2} s from {:.2} s:", found.len(), cfg.threshold_db, look, at);
     for f in &found {

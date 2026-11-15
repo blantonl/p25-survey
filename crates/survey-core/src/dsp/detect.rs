@@ -26,14 +26,15 @@ pub struct DetectConfig {
     pub channel_half_hz: f64,
     /// The floor: the median within this of it, Hz.
     pub floor_half_hz: f64,
-    /// Something up without a break this far either side is wide, not a
-    /// channel, Hz.
+    /// Something within `wide_db` of a channel's level all the way this far
+    /// either side of it is wide, not a channel, Hz.
     pub wide_hz: f64,
+    pub wide_db: f64,
 }
 
 impl Default for DetectConfig {
     fn default() -> Self {
-        DetectConfig { threshold_db: 4.5, percentile: 0.2, channel_half_hz: 4000.0, floor_half_hz: 150_000.0, wide_hz: 25_000.0 }
+        DetectConfig { threshold_db: 4.5, percentile: 0.2, channel_half_hz: 4000.0, floor_half_hz: 150_000.0, wide_hz: 25_000.0, wide_db: 6.0 }
     }
 }
 
@@ -128,9 +129,9 @@ impl Detector {
             .collect()
     }
 
-    /// The channels that stood out, between `lo_hz` and `hi_hz` (absolute),
-    /// for a tuning centred on `center_hz`.
-    pub fn find(&self, center_hz: f64, lo_hz: f64, hi_hz: f64, cfg: &DetectConfig) -> Vec<Found> {
+    /// Each raster channel from `lo_hz` to `hi_hz` (and four more each side):
+    /// (frequency, level over the floor, power, floor), dB.
+    pub fn levels(&self, center_hz: f64, lo_hz: f64, hi_hz: f64, cfg: &DetectConfig) -> Vec<(f64, f64, f64, f64)> {
         let spec = self.spectrum(cfg.percentile);
         let bin = self.bin_hz();
         let half = (self.n / 2) as f64;
@@ -151,14 +152,27 @@ impl Detector {
             let mid = v.len() / 2;
             *v.select_nth_unstable_by(mid, |a, b| a.total_cmp(b)).1 as f64
         };
+        let r = raster_hz((lo_hz + hi_hz) / 2.0);
+        let first = (lo_hz / r).ceil() as i64;
+        let last = (hi_hz / r).floor() as i64;
+        (first - 4..=last + 4)
+            .map(|i| {
+                let f = i as f64 * r;
+                let (p, fl) = (power(f), floor(f));
+                (f, p - fl, p, fl)
+            })
+            .collect()
+    }
+
+    /// The channels that stood out, between `lo_hz` and `hi_hz` (absolute),
+    /// for a tuning centred on `center_hz`.
+    pub fn find(&self, center_hz: f64, lo_hz: f64, hi_hz: f64, cfg: &DetectConfig) -> Vec<Found> {
         let mut out = Vec::new();
         if hi_hz <= lo_hz {
             return out;
         }
         let r = raster_hz((lo_hz + hi_hz) / 2.0);
-        let first = (lo_hz / r).ceil() as i64;
-        let last = (hi_hz / r).floor() as i64;
-        let levels: Vec<(f64, f64)> = (first - 4..=last + 4).map(|i| (i as f64 * r, power(i as f64 * r) - floor(i as f64 * r))).collect();
+        let levels: Vec<(f64, f64)> = self.levels(center_hz, lo_hz, hi_hz, cfg).into_iter().map(|(f, l, _, _)| (f, l)).collect();
         let reach = (cfg.wide_hz / r).round() as usize;
         for i in 4..levels.len() - 4 {
             let (f, l) = levels[i];
@@ -170,11 +184,14 @@ impl Detector {
             if (1..=near).any(|d| levels[i - d].1 > l || levels[i + d].1 >= l) {
                 continue;
             }
-            // Wide: up without a break for `wide_hz` on both sides. (Two
-            // channels 25 kHz apart have a gap between them; something wide
-            // doesn't.)
-            let up = |j: usize| levels.get(j).is_some_and(|&(_, v)| v >= cfg.threshold_db - 3.0);
-            if i >= reach && (i - reach..=i).all(up) && (i..=i + reach).all(up) {
+            // Wide: about as strong (within `wide_db` of this) everywhere
+            // `wide_hz` either side. A channel's peak stands over its skirts,
+            // and over a strong neighbour's skirts or spurs; something wide is
+            // flat. (Two channels 25 kHz apart have a gap between them.)
+            // (For a weak channel, never lower than half the threshold, or the
+            // noise either side would count.)
+            let bar = (l - cfg.wide_db).max(cfg.threshold_db / 2.0);
+            if i >= reach && (i - reach..=i + reach).all(|j| levels.get(j).is_some_and(|&(_, v)| v >= bar)) {
                 continue;
             }
             out.push(Found { freq_hz: f, level_db: l });

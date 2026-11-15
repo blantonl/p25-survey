@@ -99,10 +99,17 @@ pub enum Verdict {
     NotP25,
 }
 
+/// Announced within this of where it was heard, a channel is that one, found
+/// a raster step or two off.
+const SAME_CHANNEL_HZ: f64 = 12_500.0;
+
 /// What a candidate came to.
 #[derive(Clone, Debug)]
 pub struct Record {
+    /// The channel: where it was found, or where it announces it is if that
+    /// is within a raster step or two ([`Record::heard_hz`] keeps the other).
     pub freq_hz: f64,
+    pub heard_hz: f64,
     /// dB over the local floor in the look.
     pub level_db: f64,
     pub hop: usize,
@@ -134,6 +141,12 @@ impl Record {
     /// copy (an image, intermodulation) of a control channel elsewhere.
     pub fn announced_elsewhere(&self) -> Option<u64> {
         self.site.announced_hz().filter(|&a| (a as f64 - self.freq_hz).abs() > 3000.0)
+    }
+
+    /// It announces the frequency it was heard on: a control channel of its
+    /// own, whatever else is about.
+    pub fn announces_itself(&self) -> bool {
+        self.site.announced_hz().is_some_and(|a| (a as f64 - self.freq_hz).abs() <= 3000.0)
     }
 
     /// Share of TSBKs attempted that passed, by the better receiver.
@@ -282,7 +295,7 @@ impl Survey {
     }
 
     fn start_dwell(&mut self, mut found: Vec<Found>, out: &mut Vec<Output>) {
-        found.retain(|f| !self.complete.iter().any(|&c| (c - f.freq_hz).abs() < 1000.0));
+        found.retain(|f| !self.complete.iter().any(|&c| (c - f.freq_hz).abs() <= SAME_CHANNEL_HZ));
         out.push(Output::Candidates { index: self.hop, found: found.clone() });
         if found.is_empty() {
             self.next_hop(out);
@@ -357,11 +370,14 @@ impl Survey {
             if let Some(verdict) = verdict {
                 let d = chans.swap_remove(i);
                 chz.remove(d.head);
+                let heard = d.found.freq_hz;
+                let freq_hz = d.cc.site.announced_hz().map(|a| a as f64).filter(|a| (a - heard).abs() <= SAME_CHANNEL_HZ).unwrap_or(heard);
                 if verdict == Verdict::Complete {
-                    self.complete.push(d.found.freq_hz);
+                    self.complete.push(freq_hz);
                 }
                 out.push(Output::Record(Box::new(Record {
-                    freq_hz: d.found.freq_hz,
+                    freq_hz,
+                    heard_hz: heard,
                     level_db: d.found.level_db,
                     hop: self.hop,
                     verdict,
@@ -400,8 +416,9 @@ impl Survey {
 /// Mark the control channels that are copies of others: it announces
 /// another's frequency; or it has the same NAC, system, RFSS and site as one
 /// that decodes better; or it sits at the mirror image (about the tuning
-/// centre) of one at least 10 dB stronger in the same hop, the radio's own
-/// image. `hops` are the tuning centres the records' `hop` indexes.
+/// centre) of one at least 10 dB stronger with the same NAC, in the same hop:
+/// the radio's own image. One that announces its own frequency is never a
+/// copy. `hops` are the tuning centres the records' `hop` indexes.
 pub fn mark_copies(records: &mut [Record], hops: &[f64]) {
     let marks: Vec<Option<f64>> = (0..records.len())
         .map(|i| {
@@ -411,6 +428,9 @@ pub fn mark_copies(records: &mut [Record], hops: &[f64]) {
             }
             if let Some(a) = r.announced_elsewhere() {
                 return Some(a as f64);
+            }
+            if r.announces_itself() {
+                return None;
             }
             records.iter().enumerate().filter(|&(j, g)| j != i && g.is_control() && g.announced_elsewhere().is_none()).find_map(|(_, g)| {
                 let same = r.identity().is_some() && r.identity() == g.identity() && (g.tsbks, g.level_db) > (r.tsbks, r.level_db);
