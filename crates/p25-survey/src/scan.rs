@@ -123,19 +123,68 @@ fn gain_number(source: &Source, g: Gain) -> Option<f64> {
 
 /// `--radio KIND[:SERIAL]`: airspy, hydrasdr, rtlsdr, hackrf.
 fn open_radio(spec: &str, rest: &[String]) -> Result<Box<dyn Radio>, String> {
-    let max_rate_hz = crate::opt(rest, "--rate").map(|r| r.parse::<f64>().map(|m| m * 1e6).map_err(|_| "--rate: MS/s".to_string())).transpose()?;
+    let max_rate_hz = opt2(rest, "--rate", "--sample-rate").map(|r| r.parse::<f64>().map(|m| m * 1e6).map_err(|_| "--rate: MS/s".to_string())).transpose()?;
     let vga_db = crate::opt(rest, "--vga").map(|v| v.parse::<u32>().map_err(|_| "--vga: 0-62 dB".to_string())).transpose()?;
     let opts = Options { max_rate_hz, vga_db, amp: rest.iter().any(|a| a == "--amp") };
     survey_radio::open(spec, &opts).map_err(|e| e.to_string())
 }
 
+/// Flags that take a value, and those that don't.
+const VALUE_FLAGS: &[&str] = &[
+    "--start",
+    "--stop",
+    "--step",
+    "--radio",
+    "--sdr",
+    "--rate",
+    "--sample-rate",
+    "--gain",
+    "--sensitivity",
+    "--vga",
+    "--threshold",
+    "--max-dwell",
+    "--confirm-timeout",
+    "--output",
+    "--gain-sweep",
+    "--ppm",
+];
+const SWITCHES: &[&str] = &["--amp", "--hide-no-cc", "--rr", "--rr-stdin", "--auto-gain", "--resume", "--list-gains", "--phase1-only"];
+
+/// Every flag known, each value-taking one with its value.
+fn check_flags(rest: &[String]) -> Result<(), String> {
+    let mut i = 0;
+    while i < rest.len() {
+        let a = rest[i].as_str();
+        if a == "--device-args" {
+            return Err("--device-args (gr-osmosdr's) is gone: --radio picks the radio, --gain/--sensitivity set an Airspy's or HydraSDR's gain, --vga/--amp a HackRF's".into());
+        }
+        if VALUE_FLAGS.contains(&a) {
+            if i + 1 >= rest.len() {
+                return Err(format!("{a} needs a value"));
+            }
+            i += 2;
+        } else if SWITCHES.contains(&a) {
+            i += 1;
+        } else {
+            return Err(format!("scan: {a}? (p25-survey with no arguments lists the options)"));
+        }
+    }
+    Ok(())
+}
+
+/// The value of a flag, or of its older (Python version's) name.
+fn opt2<'a>(rest: &'a [String], name: &str, old: &str) -> Option<&'a str> {
+    crate::opt(rest, name).or_else(|| crate::opt(rest, old))
+}
+
 pub fn scan(args: &[String]) -> Result<(), String> {
     let paths: Vec<&String> = args.iter().take_while(|a| !a.starts_with("--")).collect();
     let rest = &args[paths.len()..];
+    check_flags(rest)?;
     let num = |name: &str| crate::opt(rest, name).map(|v| v.parse::<f64>().map_err(|_| format!("{name}: a number"))).transpose();
     let usable = 0.85;
     // No recordings and no --radio: the first radio plugged in.
-    let radio = match crate::opt(rest, "--radio") {
+    let radio = match opt2(rest, "--radio", "--sdr") {
         Some(r) => Some(r.to_string()),
         None if paths.is_empty() => Some(first_radio()?),
         None => None,
@@ -192,6 +241,11 @@ pub fn scan(args: &[String]) -> Result<(), String> {
     if let Some(t) = num("--max-dwell")? {
         cfg.max_dwell_s = t;
     }
+    if let Some(t) = num("--confirm-timeout")? {
+        cfg.confirm_s = t;
+    }
+    let detect_only = rest.iter().any(|a| a == "--phase1-only");
+    cfg.detect_only = detect_only;
     let user_gain = match &mut source {
         Source::Radio(r) => {
             let g = gain(rest, r.as_ref())?;
@@ -219,7 +273,13 @@ pub fn scan(args: &[String]) -> Result<(), String> {
     if ppm != 0.0 && matches!(source, Source::Recordings { .. }) {
         return Err("scan: --ppm is for a radio (a recording can't be retuned)".into());
     }
-    let out_path = crate::opt(rest, "--output").map(std::path::PathBuf::from);
+    // As the Python version: a survey file always, survey-<UTC time>.json by
+    // default (a --phase1-only scan writes none).
+    let out_path = match (crate::opt(rest, "--output"), detect_only) {
+        (_, true) => None,
+        (Some(p), false) => Some(std::path::PathBuf::from(p)),
+        (None, false) => Some(std::path::PathBuf::from(format!("survey-{}.json", crate::record::stamp()))),
+    };
     // --resume: the records already in --output stay; what they cover isn't
     // surveyed again (except partial control channels: another chance).
     let resume = rest.iter().any(|a| a == "--resume");
@@ -364,7 +424,14 @@ pub fn scan(args: &[String]) -> Result<(), String> {
                     )?;
                     println!("\nhop {} of {} at {:.4} MHz", index + 1, hops.len(), center_hz / 1e6);
                 }
-                Output::Candidates { found, .. } => println!("  {} candidate(s)", found.len()),
+                Output::Candidates { found, .. } => {
+                    println!("  {} candidate(s)", found.len());
+                    if detect_only {
+                        for f in &found {
+                            println!("    {:.5} MHz  {:5.1} dB", f.freq_hz / 1e6, f.level_db);
+                        }
+                    }
+                }
                 Output::Record(r) => records.push(*r),
                 Output::GainSweep(sw) => {
                     flush(
@@ -423,7 +490,8 @@ pub fn scan(args: &[String]) -> Result<(), String> {
         println!("{lost} samples lost ({:.2} % of the air): the computer didn't keep up.", 100.0 * lost as f64 / (air + lost) as f64);
     }
     if !sweeps.is_empty() {
-        print_bands(&sweeps, unit);
+        let advice = print_bands(&sweeps, unit);
+        offer_rescan(args, user_gain, &advice)?;
     }
     let mut rewrite = false;
     if let Some(worker) = rr_worker {
@@ -500,7 +568,8 @@ fn print_sweep(sw: &GainSweep) {
 }
 
 /// Per band: every hop's channels together, scored per gain.
-fn print_bands(sweeps: &[GainSweep], unit: &str) {
+fn print_bands(sweeps: &[GainSweep], unit: &str) -> Vec<(&'static str, usize, f32)> {
+    let mut advice = Vec::new();
     let mut bands: Vec<&str> = sweeps.iter().map(|s| band(s.center_hz)).collect();
     bands.dedup();
     println!("\nGain advice ({unit}; decoded TSBKs per channel, each against its best):");
@@ -512,10 +581,58 @@ fn print_bands(sweeps: &[GainSweep], unit: &str) {
         let channels = tsbks.first().map_or(0, Vec::len);
         let table: Vec<String> = gains.iter().zip(&scores).map(|(g, s)| format!("{g}: {:.0}%", 100.0 * s)).collect();
         match best_gain(&gains, &scores) {
-            Some(g) => println!("  {b}: --gain {g}  ({channels} control channel(s); {})", table.join(", ")),
+            Some(g) => {
+                println!("  {b}: --gain {g}  ({channels} control channel(s); {})", table.join(", "));
+                advice.push((b, channels, g));
+            }
             None => println!("  {b}: nothing decoded at any gain"),
         }
     }
+    advice
+}
+
+/// After a gain sweep, at a terminal: offer to scan again at the gain advised
+/// for the band with the most control channels (the Python version's
+/// prompt), into a file of its own.
+fn offer_rescan(args: &[String], current: Gain, advice: &[(&str, usize, f32)]) -> Result<(), String> {
+    use std::io::{IsTerminal, Write};
+    let Some(&(band, _, g)) = advice.iter().max_by_key(|a| a.1) else { return Ok(()) };
+    if !std::io::stdin().is_terminal() {
+        return Ok(());
+    }
+    let now = match current {
+        Gain::Linearity(v) | Gain::Sensitivity(v) => Some(v as f32),
+        Gain::Db(d) => Some(d),
+        Gain::Auto => None,
+    };
+    if now.is_some_and(|n| (n - g).abs() < 0.5) {
+        println!("\nThe gain used ({g}) is the one advised for {band}: no need to scan again.");
+        return Ok(());
+    }
+    print!("\nScan again with --gain {g} (was {}; advised for {band})? [Y/n] ", now.map_or("auto".into(), |n| n.to_string()));
+    std::io::stdout().flush().map_err(|e| e.to_string())?;
+    let mut answer = String::new();
+    if std::io::stdin().read_line(&mut answer).is_err() || !matches!(answer.trim().to_lowercase().as_str(), "" | "y" | "yes") {
+        return Ok(());
+    }
+    // The same scan, at that gain, without the sweep, into its own file.
+    let mut again = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--auto-gain" | "--resume" => i += 1,
+            "--gain" | "--gain-sweep" | "--sensitivity" | "--output" => i += 2,
+            a => {
+                again.push(a.to_string());
+                i += 1;
+            }
+        }
+    }
+    let base = crate::opt(args, "--output").map_or(format!("survey-{}", crate::record::stamp()), |o| o.trim_end_matches(".json").to_string());
+    let output = format!("{base}-rescan-gain{}.json", g.round());
+    again.extend(["--gain".to_string(), g.to_string(), "--output".to_string(), output.clone()]);
+    println!("\n=== Scanning again with --gain {g}: {output} ===");
+    scan(&again)
 }
 
 /// The first radio plugged in, as `--radio` takes it.

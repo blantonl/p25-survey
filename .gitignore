@@ -1,4 +1,23 @@
+# Build
 target/
+
+# Recordings and the op25 baseline's message logs (they carry unit IDs)
 *.sigmf-data
 /corpus/raw/
 /corpus/baseline/
+
+# Survey outputs (never commit live scan results)
+survey-*.json
+survey-*.txt
+survey-*.md
+*.ndjson
+
+# Python (corpus scripts)
+__pycache__/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~

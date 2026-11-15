@@ -48,6 +48,8 @@ pub struct SurveyConfig {
     pub sweep_s: f64,
     /// Channels already surveyed (a resumed survey): not decoded again.
     pub done_hz: Vec<f64>,
+    /// Only look for carriers: report each hop's candidates, decode none.
+    pub detect_only: bool,
 }
 
 impl SurveyConfig {
@@ -68,6 +70,7 @@ impl SurveyConfig {
             gains: Vec::new(),
             sweep_s: 3.0,
             done_hz: Vec::new(),
+            detect_only: false,
         }
     }
 }
@@ -506,7 +509,7 @@ impl Survey {
         found.retain(|f| !self.complete.iter().any(|&c| (c - f.freq_hz).abs() <= SAME_CHANNEL_HZ));
         out.push(Output::Candidates { index: self.hop, found: found.clone() });
         self.hop_controls.clear();
-        if found.is_empty() {
+        if found.is_empty() || self.cfg.detect_only {
             self.next_hop(out);
             return;
         }

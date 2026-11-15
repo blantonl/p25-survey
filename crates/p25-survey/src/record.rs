@@ -116,6 +116,14 @@ fn civil(days: i64) -> (i64, i64, i64) {
     (yoe + era * 400 + (month <= 2) as i64, month, day)
 }
 
+/// Now (UTC) for a file name: YYYYMMDD-HHMMSS.
+pub fn stamp() -> String {
+    let secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+    let (y, m, d) = civil(secs.div_euclid(86_400));
+    let t = secs.rem_euclid(86_400);
+    format!("{y:04}{m:02}{d:02}-{:02}{:02}{:02}", t / 3600, t % 3600 / 60, t % 60)
+}
+
 /// Now, as ISO 8601 UTC with milliseconds.
 pub fn now_utc() -> String {
     let d = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
