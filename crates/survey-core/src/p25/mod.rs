@@ -1,8 +1,12 @@
 //! P25 control channel broadcasts: what a survey learns a site from.
 
 mod bandplan;
+pub mod crc;
+pub mod framer;
 mod mac;
+pub mod nid;
 mod site;
+pub mod trellis;
 mod tsbk;
 
 pub use bandplan::{BandPlan, IdenUp};

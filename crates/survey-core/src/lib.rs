@@ -4,7 +4,9 @@
 //! (`survey-radio`, `p25-survey`), so everything here runs the same on a live
 //! radio and on a recording, and is tested on recordings.
 //!
-//! - [`p25`]: TSBK and TDMA MAC broadcast parsing, the band plan, and what a
+//! - [`dsp`]: filters, channel extraction, FM discrimination.
+//! - [`p25`]: frame sync, NID, trellis and CRC; TSBK and TDMA MAC broadcast parsing, the band plan, and what a
 //!   control channel has told us about its site ([`p25::SiteInfo`]).
 
+pub mod dsp;
 pub mod p25;

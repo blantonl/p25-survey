@@ -43,6 +43,8 @@ scale; lin 18 starts to approach full scale.
     (filter `rc`; with `rrc` it decodes nothing). Every frame_assembler
     message is logged, and p25-survey's own `_process_msg` builds the record.
 - `run_baseline.sh`: `baseline.py` over every recording.
+- `compare.py`: the Rust decoder against the baseline, channel by channel
+  (copy `raw/` and `baseline/` here first: `rsync -a dragon1:p25-corpus/raw/ corpus/raw/`).
 
 Outputs in `baseline/`: `<name>.phase1.json`,
 `<name>.<demod>.records.ndjson` (one SurveyRecord plus fec stats per

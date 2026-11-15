@@ -12,5 +12,7 @@ name = "p25-survey"
 path = "src/main.rs"
 
 [dependencies]
+survey-core = { path = "../survey-core" }
 survey-radio.workspace = true
 num-complex.workspace = true
+serde_json.workspace = true

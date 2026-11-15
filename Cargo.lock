@@ -43,6 +43,8 @@ name = "p25-survey"
 version = "0.1.0"
 dependencies = [
  "num-complex",
+ "serde_json",
+ "survey-core",
  "survey-radio",
 ]
 
@@ -111,6 +113,7 @@ dependencies = [
 name = "survey-core"
 version = "0.1.0"
 dependencies = [
+ "num-complex",
  "serde",
  "serde_json",
 ]

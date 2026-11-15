@@ -5,9 +5,11 @@ program: no GNU Radio, no op25, no Python. Scan a band with an SDR, find the
 P25 control channels, and log each site's identity, band plan, neighbours and
 secondary control channels, cross-referenced against RadioReference.
 
-**Status: early.** The broadcast parsing and the recording reader are in; the
-DSP (channelizer, C4FM and CQPSK receivers, framing) is next. Until it can
-match the Python version on the [corpus](corpus/README.md), use that one.
+**Status: early.** It decodes C4FM control channels from recordings
+(`p25-survey decode`), at least as well as op25 on every non-simulcast
+channel in the [corpus](corpus/README.md). Next: the CQPSK receiver for
+simulcast, the shared channelizer, the scan, then radios. Until it can do a
+survey, use the Python version.
 
 ## Layout
 
@@ -28,6 +30,8 @@ corpus/               the IQ recordings it is tested against (kept out of git)
 cargo build --release
 cargo test
 ./target/release/p25-survey info corpus/raw/800-a-853.4-2s
+./target/release/p25-survey decode corpus/raw/800-a-853.4 --freq 855.0625,851.0875
+python3 corpus/compare.py          # against the op25 baseline
 ```
 
 See [DECISIONS.md](DECISIONS.md) for why it is built the way it is.

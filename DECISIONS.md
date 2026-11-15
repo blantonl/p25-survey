@@ -72,6 +72,31 @@ candidate over the whole recording, from both of its receivers. See
 (which carry unit IDs) stay out of git; the broadcasts used as test fixtures
 carry none.
 
+## 2026-11-15 — C4FM receiver: timing and levels from each frame sync
+
+The channel's FM discriminator is averaged over a symbol (integrate and
+dump). Each frame sync is found by correlating with the sync's 24 outer
+symbols (normalised, so level and frequency offset don't matter; the sign
+gives the polarity); its +3 and -3 symbols give the outer level and centre
+for slicing the rest of the frame. A control channel's frames are a few
+hundred symbols each, so there is no clock to track between syncs.
+
+The ½-rate trellis symbols go out as a constellation point per *pair* of
+dibits (TIA-102.BAAA's table), not as their 4 bits; the Viterbi compares the
+received dibits with each branch's, so a symbol off by one level costs one
+bit, as noise makes it.
+
+On the corpus (2026-11-15), C4FM alone: every site broadcast op25 decodes on
+the clean channels; more than op25's better chain on the C4FM sites (853.7875
+928 vs 901, 857.2125 975 vs 951, the weak 854.5125 172 vs 36); and two sites
+op25 never identified (771.73125, 771.98125). Simulcast channels need the
+CQPSK receiver (Metrocrest 854.7875: 91 vs 428).
+
+## 2026-11-15 — The NAC is the one heard most
+
+One NID in a noisy stretch can decode to another NAC (Metrocrest read as FFF
+until this): a site's NAC is the majority of its frames'.
+
 ## 2026-11-15 — License
 
 GPL-3.0-or-later, as the Python version. That was required there by op25;

@@ -21,8 +21,9 @@ pub struct Neighbor {
 /// neighbour heard before its IDEN_UP gets a frequency once the table arrives.
 #[derive(Clone, Debug, Default)]
 pub struct SiteInfo {
-    /// From the frames' NIDs.
+    /// From the frames' NIDs: the one heard most.
     pub nac: Option<u16>,
+    nac_votes: BTreeMap<u16, u32>,
     pub wacn: Option<u32>,
     pub sysid: Option<u16>,
     pub rfss: Option<u8>,
@@ -59,9 +60,14 @@ impl SiteInfo {
         new
     }
 
-    /// Note the NAC from a frame's NID. True if it is the first (or changed).
+    /// Note the NAC from a frame's NID. True if the most-heard one changed.
+    /// (One NID in a noisy stretch can decode to another NAC.)
     pub fn nac_heard(&mut self, nac: u16) -> bool {
-        set(&mut self.nac, nac)
+        *self.nac_votes.entry(nac).or_default() += 1;
+        let top = self.nac_votes.iter().max_by_key(|&(_, &n)| n).map(|(&v, _)| v);
+        let changed = top != self.nac;
+        self.nac = top;
+        changed
     }
 
     /// WACN, system, RFSS and site all heard.
@@ -130,6 +136,15 @@ mod tests {
         assert!(s.push(Broadcast::Adjacent { wacn: None, sysid: 0x1A4, rfss: 1, site: 9, channel: 0x0020 }));
         assert_eq!(s.neighbors().count(), 2);
         assert_eq!((s.broadcasts, s.new), (7, 5));
+    }
+
+    #[test]
+    fn the_nac_heard_most() {
+        let mut s = SiteInfo::default();
+        assert!(s.nac_heard(0x00A));
+        assert!(!s.nac_heard(0x00A));
+        assert!(!s.nac_heard(0xFFF));
+        assert_eq!(s.nac, Some(0x00A));
     }
 
     #[test]
