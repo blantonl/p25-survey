@@ -4,6 +4,12 @@
 
 - Prebuilt binaries with each release: Linux (x86-64, 64-bit ARM / Raspberry
   Pi), macOS (Apple silicon, Intel), Windows (untried).
+- `--auto-gain` looks at a tuning again at the advised gain when that is
+  above the scan's, and decodes what was too weak at the scan's gain. On a
+  700 MHz antenna that needed more gain, this found a control channel
+  (and two more in the same tuning) the scan had missed.
+- The Airspy/HydraSDR gain sweep goes up to preset 21, and the advice says
+  when the best gain is the highest tried.
 
 ## 0.5.0 (2026-11)
 

@@ -4,7 +4,8 @@ Recorded IQ that the Rust p25-survey is developed and tested against, with
 reference results from the Python/op25 p25-survey on the same samples.
 
 The recordings stay out of git (size, and control channels carry unit IDs).
-They live on the capture host at `~/p25-corpus/raw/`. This directory holds the
+They live on the capture host at `~/p25-corpus/raw/` (the `hqz-*` ones were
+recorded on hqz with `airspy_rx`, the same way, and copied there). This directory holds the
 scripts, and the reference results once they are reviewed.
 
 ## Recordings
@@ -21,6 +22,8 @@ gain 14 unless noted, ppm 0. Recorded 2026-11-15.
 | `700-a-772.3` | 772.3 | 45 | lin 14 | 700 MHz downlink 769.8–774.8, incl. DFW East 774.48125 |
 | `800-a-853.4-lin8` | 853.4 | 10 | lin 8 | Gain study: step A, low gain |
 | `800-a-853.4-lin20` | 853.4 | 10 | lin 20 | Gain study: step A, high gain |
+| `hqz-770.5-lin14` | 770.5 | 10 | lin 14 | Another host and antenna (hqz): the 700 MHz hop where the survey at lin 14 missed KaufTxWarn's control channel, 771.20625 (a 4.6 dB carrier, no frame) |
+| `hqz-770.5-stages` | 770.5 | 10 | LNA 14, MIX 15, IF 13 | The same 10 s at the gain hqz's trunk-pro uses: 771.20625 complete, and 769.61875 and 772.99375 too. `tests/relook.rs` plays the two as one radio at two gains |
 
 `800-a` + `800-b` + `800-c` + `800-d` cover 851–869 MHz as four sweep steps
 (about 5 MHz usable each), so a full 800 MHz scan can be replayed.

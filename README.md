@@ -124,8 +124,9 @@ For each tuning of the radio across `--start` to `--stop`:
    frame in 2 s), or isn't a control channel (no control frames); or at
    `--max-dwell` (12 s).
 3. **Gain sweep** (with `--auto-gain`): the control channels found are decoded
-   again at each gain of a grid; the advice per band is the lowest gain within
-   2 % of the best.
+   again at each gain of a grid; the advice is the lowest gain within 2 % of
+   the best. If that is above the scan's gain, the tuning is looked at again
+   at it, and what was too weak to stand out or decode is decoded there.
 
 Copies are marked at the end of each tuning: a channel that announces
 another's frequency, has the same identity as a better one, or sits at the
@@ -187,8 +188,8 @@ mirror image of a much stronger one with its NAC.
 
 | Option | |
 |---|---|
-| `--auto-gain` | After each tuning, decode its control channels again at each gain of the grid; print the advice per band, and offer to scan again at it. |
-| `--gain-sweep N,N,...` | The grid. Defaults: Airspy/HydraSDR 6,9,12,15,18; RTL-SDR 20,28,34,39,44,49.6; HackRF 0,8,16,24,32,40. |
+| `--auto-gain` | After each tuning, decode its control channels again at each gain of the grid; where the best is above the scan's gain, look at the tuning again at it for channels too weak at the scan's. Then print the advice per band, and offer to scan again at it. |
+| `--gain-sweep N,N,...` | The grid. Defaults: Airspy/HydraSDR 6,9,12,15,18,21; RTL-SDR 20,28,34,39,44,49.6; HackRF 0,8,16,24,32,40. |
 
 ### Output
 

@@ -4,7 +4,8 @@
 //! Tune → (caller retunes, says tuned) → Settle: drop samples while the radio
 //! settles → Look: find the channels that stay on → Dwell: decode every
 //! candidate at once, each until it is complete, isn't P25, or runs out of
-//! time → a Record per candidate → next hop
+//! time → a Record per candidate → [gain sweep → look again at the advised
+//! gain, if higher] → next hop
 //! ```
 //!
 //! All time is counted in samples, so a recording replayed faster than real
@@ -46,6 +47,11 @@ pub struct SurveyConfig {
     pub gains: Vec<f32>,
     /// How long each gain is measured, seconds.
     pub sweep_s: f64,
+    /// The gain the survey runs at, in the sweep's units (None: not one of
+    /// them, e.g. the radio's AGC). When a hop's sweep advises more than this,
+    /// the hop is looked at again at the advised gain: channels too weak to
+    /// stand out, or to decode, at the survey's gain get their chance.
+    pub start_gain: Option<f32>,
     /// Channels already surveyed (a resumed survey): not decoded again.
     pub done_hz: Vec<f64>,
     /// Only look for carriers: report each hop's candidates, decode none.
@@ -69,6 +75,7 @@ impl SurveyConfig {
             max_dwell_s: 12.0,
             gains: Vec::new(),
             sweep_s: 3.0,
+            start_gain: None,
             done_hz: Vec::new(),
             detect_only: false,
         }
@@ -241,6 +248,12 @@ pub enum Output {
     },
     Record(Box<Record>),
     GainSweep(Box<GainSweep>),
+    /// Hop `index` is looked at again at `gain` (its sweep's advice, above
+    /// the survey's): the candidates and records that follow are that look's.
+    Relook {
+        index: usize,
+        gain: f32,
+    },
     Done,
 }
 
@@ -271,6 +284,8 @@ enum State {
         t: u64,
     },
     Sweep(Box<Sweep>),
+    /// Waiting for the caller to set the advised gain, to look again.
+    Relook,
     Done,
 }
 
@@ -304,6 +319,11 @@ pub struct Survey {
     pending: std::collections::VecDeque<Command>,
     /// The hop's control channels, for its gain sweep.
     hop_controls: Vec<f64>,
+    /// The hop's P25 channels that aren't control channels: not decoded again
+    /// when the hop is looked at again.
+    hop_traffic: Vec<f64>,
+    /// Looking at the hop again, at the advised gain.
+    relooking: bool,
 }
 
 impl Survey {
@@ -316,6 +336,8 @@ impl Survey {
             state: if first.is_some() { State::Tuning } else { State::Done },
             pending: first.map(Command::Tune).into_iter().collect(),
             hop_controls: Vec::new(),
+            hop_traffic: Vec::new(),
+            relooking: false,
             cfg,
         }
     }
@@ -331,6 +353,10 @@ impl Survey {
 
     /// The radio has the gain last asked for.
     pub fn gain_applied(&mut self) {
+        if matches!(self.state, State::Relook) {
+            self.state = State::Settle { left: (self.cfg.settle_s * self.cfg.rate_hz) as u64 };
+            return;
+        }
         if let State::Sweep(sw) = &mut self.state
             && matches!(sw.phase, SweepPhase::Waiting)
         {
@@ -356,7 +382,7 @@ impl Survey {
     pub fn push(&mut self, mut x: &[Complex32], out: &mut Vec<Output>) {
         while !x.is_empty() {
             match &mut self.state {
-                State::Tuning | State::Done => return,
+                State::Tuning | State::Relook | State::Done => return,
                 State::Settle { left } => {
                     let n = (*left as usize).min(x.len());
                     *left -= n as u64;
@@ -429,6 +455,12 @@ impl Survey {
 
     /// Start the hop's gain sweep, or go on to the next hop.
     fn after_dwell(&mut self, out: &mut Vec<Output>) {
+        if self.relooking {
+            // The second look is done: back to the survey's gain.
+            self.relooking = false;
+            self.pending.push_back(Command::Gain(None));
+            return self.next_hop(out);
+        }
         let freqs = std::mem::take(&mut self.hop_controls);
         let Some(&first) = self.cfg.gains.first() else {
             return self.next_hop(out);
@@ -465,9 +497,20 @@ impl Survey {
                 self.pending.push_back(Command::Gain(Some(next)));
             }
             None => {
+                let advised = sw.result.best();
                 out.push(Output::GainSweep(Box::new(sw.result.clone())));
-                self.pending.push_back(Command::Gain(None));
-                self.next_hop(out);
+                match (advised, self.cfg.start_gain) {
+                    (Some(a), Some(s)) if a > s + 0.5 => {
+                        self.relooking = true;
+                        self.state = State::Relook;
+                        self.pending.push_back(Command::Gain(Some(a)));
+                        out.push(Output::Relook { index: self.hop, gain: a });
+                    }
+                    _ => {
+                        self.pending.push_back(Command::Gain(None));
+                        self.next_hop(out);
+                    }
+                }
             }
         }
     }
@@ -497,7 +540,8 @@ impl Survey {
         match self.state {
             State::Dwell { .. } => self.conclude(true, out),
             State::Done | State::Tuning => {}
-            State::Sweep(_) => {
+            State::Sweep(_) | State::Relook => {
+                self.relooking = false;
                 self.pending.push_back(Command::Gain(None));
                 self.next_hop(out);
             }
@@ -507,6 +551,15 @@ impl Survey {
 
     fn start_dwell(&mut self, mut found: Vec<Found>, out: &mut Vec<Output>) {
         found.retain(|f| !self.complete.iter().any(|&c| (c - f.freq_hz).abs() <= SAME_CHANNEL_HZ));
+        if self.relooking {
+            // Looking again: complete control channels and P25 traffic are
+            // settled; the rest (not seen, no P25 frame, a partial control
+            // channel) gets its chance at the higher gain.
+            let traffic = &self.hop_traffic;
+            found.retain(|f| !traffic.iter().any(|&c| (c - f.freq_hz).abs() < 4000.0));
+        } else {
+            self.hop_traffic.clear();
+        }
         out.push(Output::Candidates { index: self.hop, found: found.clone() });
         self.hop_controls.clear();
         if found.is_empty() || self.cfg.detect_only {
@@ -590,6 +643,9 @@ impl Survey {
                 let announces_itself = d.cc.site.announced_hz().is_some_and(|a| (a as f64 - freq_hz).abs() <= 3000.0);
                 if matches!(verdict, Verdict::Complete | Verdict::Partial) && announces_itself {
                     self.hop_controls.push(freq_hz);
+                }
+                if verdict == Verdict::NotControl {
+                    self.hop_traffic.push(heard);
                 }
                 out.push(Output::Record(Box::new(Record {
                     freq_hz,

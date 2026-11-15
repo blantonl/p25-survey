@@ -361,3 +361,28 @@ tags and releases stay where they are; the `python` branch keeps the 0.4.x
 line. Its CLI is kept where it can be (`--sdr` and `--sample-rate` still
 work; `--device-args` says what replaced it) and its survey files read both
 ways.
+
+## 2026-11-15 — Look again at the advised gain
+
+On hqz (another antenna, another place) the 700 MHz survey at the default
+gain (Airspy linearity 14) missed KaufTxWarn's control channel, 771.20625,
+which the trunk-pro on the same radio decodes at 40 msg/s. Recordings of the
+same 10 s at both gains (corpus `hqz-770.5-*`) showed why: at lin 14 it is
+4.6 dB over the floor and decodes nothing; at trunk-pro's gain (LNA 14, MIX
+15, IF 13, near the top) it is 11.7 dB and complete, and so are two more
+control channels in that hop (769.61875, 772.99375). The detector was right;
+the gain was too low for that antenna.
+
+`--auto-gain` advised a higher gain (18) but couldn't help: it only measures
+the control channels already found. Now, when a hop's sweep advises more
+than the scan's gain, the hop is looked at again at the advised gain, and
+what wasn't seen or didn't decode (no P25 frame, partial) is decoded there;
+complete control channels and P25 traffic aren't. A channel decoded twice
+keeps its newest record. The survey's gain is restored for the next hop.
+`tests/relook.rs` plays the two recordings as one radio at two gains.
+
+The Airspy/HydraSDR grid goes up to 21 (it stopped at 18, which won both
+hqz sweeps), and the advice says so when the best gain is the highest tried.
+It is still no substitute for the right `--gain` on a weak antenna: a hop
+whose control channels are all invisible at the scan's gain has nothing to
+sweep. On a host with a recorder already tuned, use its gain.

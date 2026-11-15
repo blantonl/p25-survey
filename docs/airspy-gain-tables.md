@@ -115,10 +115,16 @@ you suspect a tuning change has shipped.
 
 ## Related: how `--auto-gain` uses these
 
-The default gain sweep grid for an Airspy is 6, 9, 12, 15, 18 (linearity
+The default gain sweep grid for an Airspy is 6, 9, 12, 15, 18, 21 (linearity
 presets; `--gain-sweep` for another). That spans "cold" (preset 6: LNA 0,
-MIX 2, IF 10) to "hot" (preset 18: LNA 13, MIX 9, IF 11): below 6 little
-decodes, and above 18 a strong local signal tends to overload the front end
-and make copies of itself. The sweep scores each preset by the control
-messages each channel decodes there, against that channel's best, and
-advises the lowest within 2 % of the best.
+MIX 2, IF 10) to the top (preset 21: LNA 14, MIX 12, IF 13): below 6 little
+decodes; near a strong local signal the top presets can overload the front
+end and make copies of it, while a weak antenna may need them. The sweep
+scores each preset by the control messages each channel decodes there,
+against that channel's best, and advises the lowest within 2 % of the best.
+If that is above the scan's `--gain`, the tuning is looked at again at it,
+for control channels too weak to show at the scan's gain.
+
+For an antenna that needs more than preset 21 (a recorder on the same radio
+running at, say, LNA 14, MIX 15, IF 13), scan at those stages with `--lna`,
+`--mix` and `--if`.

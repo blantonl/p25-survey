@@ -276,6 +276,14 @@ pub fn scan(args: &[String]) -> Result<(), String> {
         if cfg.gains.len() < 2 {
             return Err("--gain-sweep: at least two gains".into());
         }
+        // The scan's own gain in the sweep's units, so a hop whose sweep
+        // advises more is looked at again at it. (A sensitivity preset,
+        // per-stage gains or the radio's AGC aren't on the sweep's scale.)
+        cfg.start_gain = match user_gain {
+            Gain::Linearity(v) => Some(v as f32),
+            Gain::Db(d) => Some(d),
+            Gain::Sensitivity(_) | Gain::Stages { .. } | Gain::Auto => None,
+        };
     }
     // --ppm: the radio's error, as the report gives it (+0.83: it reads 0.83
     // ppm high); every tuning is corrected by it.
@@ -390,6 +398,7 @@ pub fn scan(args: &[String]) -> Result<(), String> {
     // from the channel it copies until both are in.
     let mut written = 0;
     let mut sweeps: Vec<GainSweep> = Vec::new();
+    let mut relooked = false;
     loop {
         while let Some(c) = survey.command() {
             match c {
@@ -443,6 +452,10 @@ pub fn scan(args: &[String]) -> Result<(), String> {
                     }
                 }
                 Output::Record(r) => records.push(*r),
+                Output::Relook { gain, .. } => {
+                    relooked = true;
+                    println!("  looking again at gain {gain} (the sweep's advice, above the scan's)");
+                }
                 Output::GainSweep(sw) => {
                     flush(
                         &mut records,
@@ -483,7 +496,10 @@ pub fn scan(args: &[String]) -> Result<(), String> {
         _ => "gain",
     };
     drop(source);
-    let ccs: Vec<&Record> = records.iter().filter(|r| r.is_control()).collect();
+    // A channel looked at again counts once, as its newest record.
+    let records: Vec<&Record> =
+        records.iter().enumerate().filter(|&(i, r)| !records[i + 1..].iter().any(|l| (l.freq_hz - r.freq_hz).abs() < 1000.0)).map(|(_, r)| r).collect();
+    let ccs: Vec<&&Record> = records.iter().filter(|r| r.is_control()).collect();
     let copies = ccs.iter().filter(|r| r.copy_of.is_some()).count();
     println!(
         "\n{} candidate(s): {} control channel(s) ({} complete, {} a copy of another), {} other P25, {} not P25. {:.1} s of air in {:.1} s.",
@@ -512,8 +528,9 @@ pub fn scan(args: &[String]) -> Result<(), String> {
         }
         rewrite = true;
     }
-    if resume {
-        // A channel surveyed again keeps only its newest record.
+    if resume || relooked {
+        // A channel surveyed again (resumed, or looked at again at a higher
+        // gain) keeps only its newest record.
         crate::rows::keep_latest(&mut rows);
         rewrite = true;
     }
@@ -593,6 +610,9 @@ fn print_bands(sweeps: &[GainSweep], unit: &str) -> Vec<(&'static str, usize, f3
         match best_gain(&gains, &scores) {
             Some(g) => {
                 println!("  {b}: --gain {g}  ({channels} control channel(s); {})", table.join(", "));
+                if gains.iter().all(|&x| x <= g) {
+                    println!("    {g} is the highest gain tried: more may decode more (--gain-sweep with higher gains to see)");
+                }
                 advice.push((b, channels, g));
             }
             None => println!("  {b}: nothing decoded at any gain"),

@@ -288,7 +288,7 @@ impl Radio for Spy {
     }
 
     fn sweep_gains(&self) -> Vec<f32> {
-        vec![6.0, 9.0, 12.0, 15.0, 18.0]
+        vec![6.0, 9.0, 12.0, 15.0, 18.0, 21.0]
     }
 
     fn gain_settings(&self) -> Vec<String> {
