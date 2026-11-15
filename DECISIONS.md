@@ -202,6 +202,24 @@ frequency (859.29375 for 859.2875) takes the frequency it announces, and one
 that announces itself is never a copy (851.0875 is the exact mirror image of
 855.4125 about 853.25, and is a real site).
 
+## 2026-11-15 — The gain sweep: TSBKs decoded, each channel against its best
+
+`--auto-gain`: after each hop's dwell, its control channels (those that
+announce themselves: not copies) are measured together at each gain of the
+grid (Airspy linearity 6, 9, 12, 15, 18 by default), 3 s each after the
+settle. A gain's score is the mean over the channels of the TSBKs it decoded
+as a share of that channel's best gain's, so a strong channel doesn't drown
+out a weak one; a band's advice is the lowest gain within 2 % of its best
+score (less gain, more headroom). The Python version took the lowest TSBK
+error rate per channel (failed CRCs over attempts) and the median per band;
+that can't see frames never synced at all, which is what too little gain does
+to a weak channel, and what too much does through intermodulation.
+
+Live, 700 MHz (2026-11-15): 6: 71 %, 9: 97 %, 12: 99 %, 15: 80 %, 18: 60 %:
+--gain 12. 769.78125 decodes 117 TSBKs in 3 s at 9 and 12, 20 at 15, none at
+18; nothing clipped. The sweep adds 5 × 3.25 s to each hop with control
+channels.
+
 ## 2026-11-15 — License
 
 GPL-3.0-or-later, as the Python version. That was required there by op25;

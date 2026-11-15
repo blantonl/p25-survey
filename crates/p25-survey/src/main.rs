@@ -21,6 +21,7 @@ const USAGE: &str = "usage:
                   [--sensitivity 0-21] [--rate MS/s] [scan options]
   p25-survey scan <recording>... [--start MHz] [--stop MHz] [scan options]
       scan options: [--threshold dB] [--max-dwell S] [--output survey.json] [--hide-no-cc]
+                    [--auto-gain [--gain-sweep 6,9,12,15,18]]  (a radio only)
   p25-survey radios
 (a recording is a SigMF .sigmf-meta / .sigmf-data, or its name without either)";
 

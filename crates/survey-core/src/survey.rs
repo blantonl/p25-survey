@@ -40,6 +40,12 @@ pub struct SurveyConfig {
     /// resolves, and nothing new has come for this long.
     pub quiet_s: f64,
     pub max_dwell_s: f64,
+    /// Gain sweep: after each hop's dwell, its control channels are measured
+    /// at each of these gains (the radio's own units, e.g. an Airspy
+    /// linearity preset). Empty: no sweep.
+    pub gains: Vec<f32>,
+    /// How long each gain is measured, seconds.
+    pub sweep_s: f64,
 }
 
 impl SurveyConfig {
@@ -57,6 +63,8 @@ impl SurveyConfig {
             confirm_s: 2.0,
             quiet_s: 3.0,
             max_dwell_s: 12.0,
+            gains: Vec::new(),
+            sweep_s: 3.0,
         }
     }
 }
@@ -83,6 +91,63 @@ fn candidates(cfg: &SurveyConfig, center: f64, det: &Detector) -> Vec<Found> {
 pub enum Command {
     /// Retune the radio to this centre, then call [`Survey::tuned`].
     Tune(f64),
+    /// Set the radio's gain (None: back to the gain the survey started
+    /// with), then call [`Survey::gain_applied`].
+    Gain(Option<f32>),
+}
+
+/// One gain of a sweep: TSBKs each control channel decoded, and the share of
+/// samples near full scale.
+#[derive(Clone, Debug)]
+pub struct GainStep {
+    pub gain: f32,
+    pub tsbks: Vec<u32>,
+    pub clipped: f64,
+}
+
+/// A hop's gain sweep: its control channels, measured at each gain.
+#[derive(Clone, Debug)]
+pub struct GainSweep {
+    pub hop: usize,
+    pub center_hz: f64,
+    pub freqs: Vec<f64>,
+    pub steps: Vec<GainStep>,
+    /// Seconds each gain was measured.
+    pub seconds: f64,
+}
+
+/// Within this share of the best score, the lower gain is taken.
+const GAIN_MARGIN: f64 = 0.02;
+
+/// Score each gain: per channel, TSBKs decoded as a share of that channel's
+/// best gain's (so a strong channel doesn't drown out a weak one), averaged
+/// over the channels. `tsbks[g][c]`: gain g, channel c. A frame never synced
+/// counts against a gain here, as it wouldn't in a CRC pass rate.
+pub fn gain_scores(tsbks: &[Vec<u32>]) -> Vec<f64> {
+    let channels = tsbks.first().map_or(0, Vec::len);
+    let best: Vec<u32> = (0..channels).map(|c| tsbks.iter().map(|g| g[c]).max().unwrap_or(0)).collect();
+    let used: Vec<usize> = (0..channels).filter(|&c| best[c] > 0).collect();
+    tsbks.iter().map(|g| if used.is_empty() { 0.0 } else { used.iter().map(|&c| g[c] as f64 / best[c] as f64).sum::<f64>() / used.len() as f64 }).collect()
+}
+
+/// The gain to use: the lowest within 2 % of the best score (less gain is
+/// more headroom for strong signals). `gains` ascending or not.
+pub fn best_gain(gains: &[f32], scores: &[f64]) -> Option<f32> {
+    let top = scores.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    if top.is_nan() || top <= 0.0 {
+        return None;
+    }
+    gains.iter().zip(scores).filter(|&(_, &s)| s >= top - GAIN_MARGIN).map(|(&g, _)| g).min_by(f32::total_cmp)
+}
+
+impl GainSweep {
+    pub fn scores(&self) -> Vec<f64> {
+        gain_scores(&self.steps.iter().map(|s| s.tsbks.clone()).collect::<Vec<_>>())
+    }
+
+    pub fn best(&self) -> Option<f32> {
+        best_gain(&self.steps.iter().map(|s| s.gain).collect::<Vec<_>>(), &self.scores())
+    }
 }
 
 /// How a candidate ended.
@@ -169,6 +234,7 @@ pub enum Output {
         found: Vec<Found>,
     },
     Record(Box<Record>),
+    GainSweep(Box<GainSweep>),
     Done,
 }
 
@@ -198,7 +264,28 @@ enum State {
         chans: Vec<Dwelling>,
         t: u64,
     },
+    Sweep(Box<Sweep>),
     Done,
+}
+
+enum SweepPhase {
+    /// Waiting for the caller to say the gain is set.
+    Waiting,
+    Settle,
+    Measure,
+}
+
+struct Sweep {
+    chz: Channelizer,
+    /// (head, receivers) per control channel, in `result.freqs` order.
+    chans: Vec<(HeadId, ControlChannel)>,
+    phase: SweepPhase,
+    left: u64,
+    hot: u64,
+    total: u64,
+    iq: Vec<Complex32>,
+    tsbks: Vec<Tsbk>,
+    result: GainSweep,
 }
 
 pub struct Survey {
@@ -208,7 +295,9 @@ pub struct Survey {
     hop: usize,
     center: f64,
     state: State,
-    pending: Option<Command>,
+    pending: std::collections::VecDeque<Command>,
+    /// The hop's control channels, for its gain sweep.
+    hop_controls: Vec<f64>,
 }
 
 impl Survey {
@@ -219,7 +308,8 @@ impl Survey {
             hop: 0,
             center: first.unwrap_or(0.0),
             state: if first.is_some() { State::Tuning } else { State::Done },
-            pending: first.map(Command::Tune),
+            pending: first.map(Command::Tune).into_iter().collect(),
+            hop_controls: Vec::new(),
             cfg,
         }
     }
@@ -228,9 +318,19 @@ impl Survey {
         &self.cfg
     }
 
-    /// What the radio should do next (taken once).
+    /// What the radio should do next, in order (each taken once).
     pub fn command(&mut self) -> Option<Command> {
-        self.pending.take()
+        self.pending.pop_front()
+    }
+
+    /// The radio has the gain last asked for.
+    pub fn gain_applied(&mut self) {
+        if let State::Sweep(sw) = &mut self.state
+            && matches!(sw.phase, SweepPhase::Waiting)
+        {
+            sw.phase = SweepPhase::Settle;
+            sw.left = (self.cfg.settle_s * self.cfg.rate_hz) as u64;
+        }
     }
 
     pub fn is_done(&self) -> bool {
@@ -280,6 +380,88 @@ impl Survey {
                     }
                     self.conclude(false, out);
                 }
+                State::Sweep(sw) => match sw.phase {
+                    SweepPhase::Waiting => return,
+                    SweepPhase::Settle => {
+                        let n = (sw.left as usize).min(x.len());
+                        sw.chz.process(&x[..n]);
+                        sw.left -= n as u64;
+                        x = &x[n..];
+                        if sw.left == 0 {
+                            // Fresh receivers: only this gain's air counts.
+                            let (rate, sps) = (sw.chz.output_rate(), sw.chz.samples_per_symbol());
+                            for (head, cc) in sw.chans.iter_mut() {
+                                sw.chz.take(*head, &mut sw.iq);
+                                *cc = ControlChannel::new(rate, sps);
+                            }
+                            sw.phase = SweepPhase::Measure;
+                            sw.left = (self.cfg.sweep_s * self.cfg.rate_hz) as u64;
+                            (sw.hot, sw.total) = (0, 0);
+                        }
+                    }
+                    SweepPhase::Measure => {
+                        let n = (sw.left as usize).min(x.len());
+                        let part = &x[..n];
+                        sw.hot += part.iter().filter(|s| s.re.abs() > 0.95 || s.im.abs() > 0.95).count() as u64;
+                        sw.total += n as u64;
+                        sw.chz.process(part);
+                        for (head, cc) in sw.chans.iter_mut() {
+                            sw.chz.take(*head, &mut sw.iq);
+                            sw.tsbks.clear();
+                            cc.push(&sw.iq, &mut sw.tsbks);
+                        }
+                        sw.left -= n as u64;
+                        x = &x[n..];
+                        if sw.left == 0 {
+                            self.sweep_step_done(out);
+                        }
+                    }
+                },
+            }
+        }
+    }
+
+    /// Start the hop's gain sweep, or go on to the next hop.
+    fn after_dwell(&mut self, out: &mut Vec<Output>) {
+        let freqs = std::mem::take(&mut self.hop_controls);
+        let Some(&first) = self.cfg.gains.first() else {
+            return self.next_hop(out);
+        };
+        let Ok(mut chz) = Channelizer::new(self.cfg.rate_hz) else {
+            return self.next_hop(out);
+        };
+        if freqs.is_empty() {
+            return self.next_hop(out);
+        }
+        let chans = freqs.iter().map(|&f| (chz.add(f - self.center), ControlChannel::new(chz.output_rate(), chz.samples_per_symbol()))).collect();
+        self.state = State::Sweep(Box::new(Sweep {
+            chz,
+            chans,
+            phase: SweepPhase::Waiting,
+            left: 0,
+            hot: 0,
+            total: 0,
+            iq: Vec::new(),
+            tsbks: Vec::new(),
+            result: GainSweep { hop: self.hop, center_hz: self.center, freqs, steps: Vec::new(), seconds: self.cfg.sweep_s },
+        }));
+        self.pending.push_back(Command::Gain(Some(first)));
+    }
+
+    fn sweep_step_done(&mut self, out: &mut Vec<Output>) {
+        let State::Sweep(sw) = &mut self.state else { return };
+        let gain = self.cfg.gains[sw.result.steps.len()];
+        let tsbks = sw.chans.iter().map(|(_, cc)| cc.tsbks).collect();
+        sw.result.steps.push(GainStep { gain, tsbks, clipped: sw.hot as f64 / sw.total.max(1) as f64 });
+        match self.cfg.gains.get(sw.result.steps.len()) {
+            Some(&next) => {
+                sw.phase = SweepPhase::Waiting;
+                self.pending.push_back(Command::Gain(Some(next)));
+            }
+            None => {
+                out.push(Output::GainSweep(Box::new(sw.result.clone())));
+                self.pending.push_back(Command::Gain(None));
+                self.next_hop(out);
             }
         }
     }
@@ -290,6 +472,10 @@ impl Survey {
         match self.state {
             State::Dwell { .. } => self.conclude(true, out),
             State::Done | State::Tuning => {}
+            State::Sweep(_) => {
+                self.pending.push_back(Command::Gain(None));
+                self.next_hop(out);
+            }
             _ => self.next_hop(out),
         }
     }
@@ -297,6 +483,7 @@ impl Survey {
     fn start_dwell(&mut self, mut found: Vec<Found>, out: &mut Vec<Output>) {
         found.retain(|f| !self.complete.iter().any(|&c| (c - f.freq_hz).abs() <= SAME_CHANNEL_HZ));
         out.push(Output::Candidates { index: self.hop, found: found.clone() });
+        self.hop_controls.clear();
         if found.is_empty() {
             self.next_hop(out);
             return;
@@ -375,6 +562,10 @@ impl Survey {
                 if verdict == Verdict::Complete {
                     self.complete.push(freq_hz);
                 }
+                let announces_itself = d.cc.site.announced_hz().is_some_and(|a| (a as f64 - freq_hz).abs() <= 3000.0);
+                if matches!(verdict, Verdict::Complete | Verdict::Partial) && announces_itself {
+                    self.hop_controls.push(freq_hz);
+                }
                 out.push(Output::Record(Box::new(Record {
                     freq_hz,
                     heard_hz: heard,
@@ -394,7 +585,7 @@ impl Survey {
             }
         }
         if chans.is_empty() {
-            self.next_hop(out);
+            self.after_dwell(out);
         }
     }
 
@@ -403,7 +594,7 @@ impl Survey {
         match self.cfg.hops.get(self.hop) {
             Some(&c) => {
                 self.state = State::Tuning;
-                self.pending = Some(Command::Tune(c));
+                self.pending.push_back(Command::Tune(c));
             }
             None => {
                 self.state = State::Done;
@@ -457,6 +648,17 @@ mod tests {
         assert!(h[0] - w <= 851e6 && h[3] + w >= 869e6);
         assert!(h.windows(2).all(|p| p[1] - p[0] <= 2.0 * w));
         assert_eq!(plan_hops((769e6, 775e6), 6e6, 0.85).len(), 2);
+    }
+
+    #[test]
+    fn the_gain_that_decodes_most_everywhere_lowest_first() {
+        // Two channels: a strong one fine at any gain, a weak one that needs
+        // gain until the front end overloads.
+        let tsbks = vec![vec![300, 0], vec![300, 40], vec![300, 100], vec![299, 101], vec![250, 60]];
+        let gains = [4.0, 8.0, 12.0, 16.0, 20.0];
+        let s = gain_scores(&tsbks);
+        assert_eq!(best_gain(&gains, &s), Some(12.0));
+        assert_eq!(best_gain(&gains, &gain_scores(&[vec![0], vec![0]])), None);
     }
 
     #[test]

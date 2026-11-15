@@ -9,8 +9,9 @@ secondary control channels, cross-referenced against RadioReference.
 (`p25-survey scan`): every control channel op25 finds on the
 [corpus](corpus/README.md), and more, with their identity, band plan,
 neighbours and secondary control channels; copies (images,
-intermodulation) marked; records the Python version's reports read. Not yet:
-RTL-SDR and HackRF, the gain sweep, RadioReference and the reports.
+intermodulation) marked; gain advice per band (`--auto-gain`); records the
+Python version's reports read. Not yet: RadioReference and the reports,
+RTL-SDR and HackRF.
 
 ## Run
 

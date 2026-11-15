@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use survey_core::survey::{Record, Verdict};
 
 /// The record for one candidate.
-pub fn to_json(r: &Record, driver: &str) -> Value {
+pub fn to_json(r: &Record, driver: &str, gain_db: Option<f64>) -> Value {
     let s = &r.site;
     let hex = |v: Option<u32>, w: usize| v.map(|v| format!("{v:0w$X}"));
     let mut notes = Vec::new();
@@ -53,7 +53,7 @@ pub fn to_json(r: &Record, driver: &str) -> Value {
         },
         "dwell_ms": (r.dwell_s * 1000.0).round() as u64,
         "sdr_driver": driver,
-        "sdr_gain_db": Value::Null,
+        "sdr_gain_db": gain_db,
         "sdr_ppm": 0.0,
         "notes": notes,
         // Not in the Python schema:

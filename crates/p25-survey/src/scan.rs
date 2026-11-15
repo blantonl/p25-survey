@@ -10,7 +10,7 @@ use std::io::{BufWriter, Write};
 use std::time::{Duration, Instant};
 
 use num_complex::Complex32;
-use survey_core::survey::{Command, Output, Record, Survey, SurveyConfig, Verdict, mark_copies};
+use survey_core::survey::{Command, GainSweep, Output, Record, Survey, SurveyConfig, Verdict, best_gain, gain_scores, mark_copies};
 use survey_radio::airspy::Airspy;
 use survey_radio::sigmf::{Reader, Recording};
 use survey_radio::{Gain, Radio};
@@ -56,6 +56,13 @@ impl Source {
         }
     }
 
+    fn set_gain(&mut self, g: Gain) -> Result<(), String> {
+        match self {
+            Source::Recordings { .. } => Ok(()),
+            Source::Radio(r) => r.set_gain(g).map_err(|e| e.to_string()),
+        }
+    }
+
     fn read(&mut self, block: &mut Vec<Complex32>) -> Result<Read, String> {
         match self {
             Source::Recordings { reader, .. } => match reader.as_mut() {
@@ -86,6 +93,14 @@ fn gain(rest: &[String]) -> Result<Gain, String> {
         None => Ok(Gain::Linearity(14)),
         Some("auto") => Ok(Gain::Auto),
         Some(g) => g.parse().map(Gain::Linearity).map_err(|_| "--gain: 0-21 (Airspy linearity preset) or auto".into()),
+    }
+}
+
+/// The gain the records were made at, as a number (Python's sdr_gain_db).
+fn gain_number(source: &Source, g: Gain) -> Option<f64> {
+    match (source, g) {
+        (Source::Radio(_), Gain::Linearity(v) | Gain::Sensitivity(v)) => Some(v as f64),
+        _ => None,
     }
 }
 
@@ -140,6 +155,20 @@ pub fn scan(args: &[String]) -> Result<(), String> {
     if let Some(t) = num("--max-dwell")? {
         cfg.max_dwell_s = t;
     }
+    let user_gain = gain(rest)?;
+    if rest.iter().any(|a| a == "--auto-gain") {
+        if matches!(source, Source::Recordings { .. }) {
+            return Err("scan: --auto-gain needs a radio".into());
+        }
+        cfg.gains = match crate::opt(rest, "--gain-sweep") {
+            Some(g) => g.split(',').map(|v| v.trim().parse::<f32>().map_err(|_| format!("--gain-sweep: {v}?"))).collect::<Result<_, _>>()?,
+            // Airspy linearity presets: the low end rarely decodes anything.
+            None => vec![6.0, 9.0, 12.0, 15.0, 18.0],
+        };
+        if cfg.gains.len() < 2 {
+            return Err("--gain-sweep: at least two gains".into());
+        }
+    }
     let mut out_file = match crate::opt(rest, "--output") {
         Some(p) => Some(BufWriter::new(File::create(p).map_err(|e| format!("{p}: {e}"))?)),
         None => None,
@@ -168,10 +197,19 @@ pub fn scan(args: &[String]) -> Result<(), String> {
     // A hop's records are written when the hop ends: a copy can't be told
     // from the channel it copies until both are in.
     let mut written = 0;
+    let mut sweeps: Vec<GainSweep> = Vec::new();
     loop {
-        if let Some(Command::Tune(c)) = survey.command() {
-            source.tune(c)?;
-            survey.tuned(c, &mut out);
+        while let Some(c) = survey.command() {
+            match c {
+                Command::Tune(hz) => {
+                    source.tune(hz)?;
+                    survey.tuned(hz, &mut out);
+                }
+                Command::Gain(g) => {
+                    source.set_gain(g.map_or(user_gain, |g| Gain::Linearity(g.round().clamp(0.0, 21.0) as u8)))?;
+                    survey.gain_applied();
+                }
+            }
         }
         if survey.is_done() {
             break;
@@ -187,12 +225,17 @@ pub fn scan(args: &[String]) -> Result<(), String> {
         for o in out.drain(..) {
             match o {
                 Output::Hop { index, center_hz } => {
-                    flush(&mut records, &mut written, &hops, hide, source.name(), out_file.as_mut())?;
+                    flush(&mut records, &mut written, &hops, hide, (source.name(), gain_number(&source, user_gain)), out_file.as_mut())?;
                     println!("\nhop {} of {} at {:.4} MHz", index + 1, hops.len(), center_hz / 1e6);
                 }
                 Output::Candidates { found, .. } => println!("  {} candidate(s)", found.len()),
                 Output::Record(r) => records.push(*r),
-                Output::Done => flush(&mut records, &mut written, &hops, hide, source.name(), out_file.as_mut())?,
+                Output::GainSweep(sw) => {
+                    flush(&mut records, &mut written, &hops, hide, (source.name(), gain_number(&source, user_gain)), out_file.as_mut())?;
+                    print_sweep(&sw);
+                    sweeps.push(*sw);
+                }
+                Output::Done => flush(&mut records, &mut written, &hops, hide, (source.name(), gain_number(&source, user_gain)), out_file.as_mut())?,
             }
         }
     }
@@ -209,6 +252,9 @@ pub fn scan(args: &[String]) -> Result<(), String> {
         air as f64 / rate,
         t0.elapsed().as_secs_f64()
     );
+    if !sweeps.is_empty() {
+        print_bands(&sweeps);
+    }
     if let Source::Radio(r) = &source {
         let lost = r.dropped();
         if lost > 0 {
@@ -216,6 +262,69 @@ pub fn scan(args: &[String]) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// The band a frequency is in, for the gain advice.
+fn band(hz: f64) -> &'static str {
+    match hz / 1e6 {
+        f if (136.0..174.0).contains(&f) => "VHF",
+        f if (380.0..512.0).contains(&f) => "UHF",
+        f if (758.0..806.0).contains(&f) => "700 MHz",
+        f if (806.0..870.0).contains(&f) => "800 MHz",
+        f if (896.0..941.0).contains(&f) => "900 MHz",
+        _ => "other",
+    }
+}
+
+/// A hop's sweep: TSBKs per channel at each gain, and the score.
+fn print_sweep(sw: &GainSweep) {
+    let scores = sw.scores();
+    println!("  gain sweep, {} control channel(s), {:.0} s each:", sw.freqs.len(), sw.seconds);
+    print!("    {:>10}", "gain");
+    for st in &sw.steps {
+        print!("  {:>6}", st.gain);
+    }
+    println!();
+    for (c, f) in sw.freqs.iter().enumerate() {
+        print!("    {:>10.5}", f / 1e6);
+        for st in &sw.steps {
+            print!("  {:>6}", st.tsbks[c]);
+        }
+        println!();
+    }
+    print!("    {:>10}", "score");
+    for sc in &scores {
+        print!("  {:>5.0}%", 100.0 * sc);
+    }
+    println!();
+    print!("    {:>10}", "clipped");
+    for st in &sw.steps {
+        print!("  {:>5.2}%", 100.0 * st.clipped);
+    }
+    println!();
+    match sw.best() {
+        Some(g) => println!("    best here: {g}"),
+        None => println!("    no gain decoded anything"),
+    }
+}
+
+/// Per band: every hop's channels together, scored per gain.
+fn print_bands(sweeps: &[GainSweep]) {
+    let mut bands: Vec<&str> = sweeps.iter().map(|s| band(s.center_hz)).collect();
+    bands.dedup();
+    println!("\nGain advice (Airspy linearity preset; decoded TSBKs per channel, each against its best):");
+    for b in bands {
+        let these: Vec<&GainSweep> = sweeps.iter().filter(|s| band(s.center_hz) == b).collect();
+        let gains: Vec<f32> = these[0].steps.iter().map(|s| s.gain).collect();
+        let tsbks: Vec<Vec<u32>> = (0..gains.len()).map(|g| these.iter().flat_map(|s| s.steps[g].tsbks.iter().copied()).collect()).collect();
+        let scores = gain_scores(&tsbks);
+        let channels = tsbks.first().map_or(0, Vec::len);
+        let table: Vec<String> = gains.iter().zip(&scores).map(|(g, s)| format!("{g}: {:.0}%", 100.0 * s)).collect();
+        match best_gain(&gains, &scores) {
+            Some(g) => println!("  {b}: --gain {g}  ({channels} control channel(s); {})", table.join(", ")),
+            None => println!("  {b}: nothing decoded at any gain"),
+        }
+    }
 }
 
 /// `p25-survey radios`: the radios plugged in.
@@ -233,7 +342,14 @@ pub fn radios() -> Result<(), String> {
 }
 
 /// Mark copies over every record so far, then print and write the new ones.
-fn flush(records: &mut [Record], written: &mut usize, hops: &[f64], hide: bool, driver: &str, file: Option<&mut BufWriter<File>>) -> Result<(), String> {
+fn flush(
+    records: &mut [Record],
+    written: &mut usize,
+    hops: &[f64],
+    hide: bool,
+    (driver, gain_db): (&str, Option<f64>),
+    file: Option<&mut BufWriter<File>>,
+) -> Result<(), String> {
     mark_copies(records, hops);
     let new = &records[*written..];
     let mut sorted: Vec<&Record> = new.iter().collect();
@@ -245,7 +361,7 @@ fn flush(records: &mut [Record], written: &mut usize, hops: &[f64], hide: bool, 
     }
     if let Some(f) = file {
         for r in new {
-            writeln!(f, "{}", to_json(r, driver)).map_err(|e| e.to_string())?;
+            writeln!(f, "{}", to_json(r, driver, gain_db)).map_err(|e| e.to_string())?;
         }
         f.flush().map_err(|e| e.to_string())?;
     }
