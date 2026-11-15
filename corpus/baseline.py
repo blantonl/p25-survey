@@ -15,9 +15,9 @@ Outputs under --out:
   <capture>.<demod>.records.ndjson   one SurveyRecord (+ fec stats) per candidate
   <capture>.<demod>.msgs.ndjson      every message, in order, per candidate
 
-Run with the system python3 on dragon1 (GNU Radio + gr-op25_repeater), against
+Run with the system python3 on the capture host (GNU Radio + gr-op25_repeater), against
 a clean copy of the p25-survey release in ~/p25-corpus/p25-survey-v0.3.5
-(`git archive --prefix=p25-survey-v0.3.5/ v0.3.5 | ssh dragon1 "cd ~/p25-corpus && tar xf -"`):
+(`git archive --prefix=p25-survey-v0.3.5/ v0.3.5 | ssh <capture host> "cd ~/p25-corpus && tar xf -"`):
   python3 baseline.py ~/p25-corpus/raw/800-a-853.4 --cc 851.0875,855.0625 ...
 """
 import argparse

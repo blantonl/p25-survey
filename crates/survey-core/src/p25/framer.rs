@@ -30,7 +30,7 @@ fn sync_sign(k: usize) -> f32 {
 
 /// Every 36th symbol of a frame (counting the sync) is a status symbol, not data.
 fn is_status(symbol: usize) -> bool {
-    (symbol + 1) % 36 == 0
+    (symbol + 1).is_multiple_of(36)
 }
 
 #[derive(Clone, Debug, Default)]

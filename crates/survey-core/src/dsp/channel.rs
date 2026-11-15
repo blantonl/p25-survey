@@ -30,7 +30,7 @@ pub struct Channel {
 fn stages(mut total: usize) -> Option<Vec<usize>> {
     let mut f = Vec::new();
     for p in [8, 7, 6, 5, 4, 3, 2] {
-        while total % p == 0 && total > 1 {
+        while total.is_multiple_of(p) && total > 1 {
             f.push(p);
             total /= p;
         }

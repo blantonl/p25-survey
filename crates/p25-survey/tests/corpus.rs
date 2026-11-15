@@ -1,7 +1,7 @@
 //! The survey on the corpus recordings: every control channel in
 //! corpus/expected.json is found, with its identity, and the copies are
 //! called copies. Skipped (passes) when the recordings aren't there (they
-//! stay out of git: `rsync -a dragon1:p25-corpus/raw/ corpus/raw/`).
+//! stay out of git: `rsync -a <capture host>:p25-corpus/raw/ corpus/raw/`).
 
 use std::path::PathBuf;
 use std::process::Command;

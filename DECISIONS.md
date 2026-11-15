@@ -65,7 +65,7 @@ wins:
 
 ## 2026-11-15 — The corpus
 
-Seven recordings from dragon1's Airspy Mini (6 MS/s, 16-bit; 800 MHz in four
+Seven recordings from an Airspy Mini (6 MS/s, 16-bit; 800 MHz in four
 tunings, 700 MHz, and two gain settings), with op25's results on every
 candidate over the whole recording, from both of its receivers. See
 [corpus/README.md](corpus/README.md). The recordings and the message logs
@@ -186,7 +186,7 @@ rather than stall USB). A retune empties the queue, and live scans settle
 (14 if not given, as the corpus was recorded), `--sensitivity` the other
 presets, `auto` the AGC.
 
-## 2026-11-15 — First live scans (dragon1, Airspy Mini, linearity 14)
+## 2026-11-15 — First live scans (Airspy Mini, linearity 14)
 
 851-869 MHz in 28 s, 769-775 MHz in 25 s, keeping up with the radio on one
 core (about a third of it). 800 MHz: 20 control channels, every one the
@@ -291,8 +291,7 @@ the one in use, and builds with none.
 
 Tested at each one's rate with the corpus resampled (2.4 MS/s quantised to
 8 bits, 9.6 and 10 MS/s): the same TSBKs as at 6 MS/s, within one. The
-drivers themselves have not run against their radios yet (dragon1 has an
-Airspy only).
+drivers themselves have not run against their radios yet.
 
 ## 2026-11-15 — Resume, Ctrl-C, --ppm
 

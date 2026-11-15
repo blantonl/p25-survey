@@ -4,12 +4,12 @@ Recorded IQ that the Rust p25-survey is developed and tested against, with
 reference results from the Python/op25 p25-survey on the same samples.
 
 The recordings stay out of git (size, and control channels carry unit IDs).
-They live on dragon1 at `~/p25-corpus/raw/`. This directory holds the
+They live on the capture host at `~/p25-corpus/raw/`. This directory holds the
 scripts, and the reference results once they are reviewed.
 
 ## Recordings
 
-Airspy Mini on dragon1, 6 MSPS complex int16 (`ci16_le`, SigMF), linearity
+Airspy Mini, 6 MSPS complex int16 (`ci16_le`, SigMF), linearity
 gain 14 unless noted, ppm 0. Recorded 2026-11-15.
 
 | Name | Center MHz | s | Gain | Why |
@@ -44,7 +44,7 @@ scale; lin 18 starts to approach full scale.
     message is logged, and p25-survey's own `_process_msg` builds the record.
 - `run_baseline.sh`: `baseline.py` over every recording.
 - `compare.py`: the Rust decoder against the baseline, channel by channel
-  (copy `raw/` and `baseline/` here first: `rsync -a dragon1:p25-corpus/raw/ corpus/raw/`).
+  (copy `raw/` and `baseline/` here first: `rsync -a <capture host>:p25-corpus/raw/ corpus/raw/`).
 
 Outputs in `baseline/`: `<name>.phase1.json`,
 `<name>.<demod>.records.ndjson` (one SurveyRecord plus fec stats per

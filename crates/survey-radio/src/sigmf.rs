@@ -158,14 +158,17 @@ impl Reader {
         let raw = &self.raw[..got - got % sb];
         out.clear();
         match self.datatype {
-            Datatype::Ci16Le => out.extend(raw.chunks_exact(4).map(|c| {
+            Datatype::Ci16Le => out.extend(raw.as_chunks::<4>().0.iter().map(|c| {
                 let i = i16::from_le_bytes([c[0], c[1]]) as f32;
                 let q = i16::from_le_bytes([c[2], c[3]]) as f32;
                 Complex32::new(i / 32768.0, q / 32768.0)
             })),
-            Datatype::Cu8 => out.extend(raw.chunks_exact(2).map(|c| Complex32::new((c[0] as f32 - 127.5) / 127.5, (c[1] as f32 - 127.5) / 127.5))),
+            Datatype::Cu8 => out.extend(raw.as_chunks::<2>().0.iter().map(|c| Complex32::new((c[0] as f32 - 127.5) / 127.5, (c[1] as f32 - 127.5) / 127.5))),
             Datatype::Cf32Le => out.extend(
-                raw.chunks_exact(8).map(|c| Complex32::new(f32::from_le_bytes([c[0], c[1], c[2], c[3]]), f32::from_le_bytes([c[4], c[5], c[6], c[7]]))),
+                raw.as_chunks::<8>()
+                    .0
+                    .iter()
+                    .map(|c| Complex32::new(f32::from_le_bytes([c[0], c[1], c[2], c[3]]), f32::from_le_bytes([c[4], c[5], c[6], c[7]]))),
             ),
         }
         Ok(out.len())

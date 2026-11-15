@@ -5,7 +5,7 @@ members = ["crates/survey-core", "crates/survey-radio", "crates/p25-survey"]
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/blantonl/p25-survey"
 

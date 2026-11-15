@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Record the p25-survey IQ corpus on dragon1 with airspy_rx.
+"""Record the p25-survey IQ corpus with airspy_rx.
 
 Each capture becomes <name>.sigmf-data (ci16_le) + <name>.sigmf-meta.
 Run: python3 capture.py [--only NAME ...] [--out DIR]

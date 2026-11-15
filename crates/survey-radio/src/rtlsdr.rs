@@ -106,7 +106,7 @@ extern "C" fn on_samples(buf: *mut c_uchar, len: u32, ctx: *mut c_void) {
     let ctx = unsafe { &*(ctx as *const Ctx) };
     let bytes = unsafe { std::slice::from_raw_parts(buf, len as usize) };
     let mut dc = ctx.dc.lock().unwrap();
-    let block = bytes.chunks_exact(2).map(|c| dc.apply(Complex32::new((c[0] as f32 - 127.5) / 127.5, (c[1] as f32 - 127.5) / 127.5))).collect();
+    let block = bytes.as_chunks::<2>().0.iter().map(|c| dc.apply(Complex32::new((c[0] as f32 - 127.5) / 127.5, (c[1] as f32 - 127.5) / 127.5))).collect();
     ctx.stream.send(block);
 }
 
