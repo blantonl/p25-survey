@@ -1,0 +1,4 @@
+target/
+*.sigmf-data
+/corpus/raw/
+/corpus/baseline/

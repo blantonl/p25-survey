@@ -1,0 +1,25 @@
+[workspace]
+resolver = "3"
+members = ["crates/survey-core", "crates/survey-radio", "crates/p25-survey"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/blantonl/p25-survey"
+
+[workspace.dependencies]
+survey-radio = { path = "crates/survey-radio" }
+num-complex = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# The DSP is unusable unoptimised (a live radio can't be kept up with), so
+# debug builds optimise a little.
+[profile.dev]
+opt-level = 1
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

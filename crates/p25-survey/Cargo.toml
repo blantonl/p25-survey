@@ -1,0 +1,16 @@
+[package]
+name = "p25-survey"
+description = "Scan a band for P25 control channels and log each site's identity, band plan and neighbours."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "p25-survey"
+path = "src/main.rs"
+
+[dependencies]
+survey-radio.workspace = true
+num-complex.workspace = true

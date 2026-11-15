@@ -1,0 +1,12 @@
+[package]
+name = "survey-core"
+description = "P25 control-channel survey: DSP, framing and broadcast decoding. No I/O."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dev-dependencies]
+serde.workspace = true
+serde_json.workspace = true
