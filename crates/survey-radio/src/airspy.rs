@@ -88,6 +88,9 @@ struct Lib {
     set_sensitivity_gain: SetU8,
     set_lna_agc: SetU8,
     set_mixer_agc: SetU8,
+    set_lna_gain: SetU8,
+    set_mixer_gain: SetU8,
+    set_vga_gain: SetU8,
     start_rx: unsafe extern "C" fn(*mut c_void, Callback, *mut c_void) -> c_int,
     stop_rx: unsafe extern "C" fn(*mut c_void) -> c_int,
     error_name: unsafe extern "C" fn(c_int) -> *const c_char,
@@ -116,6 +119,9 @@ impl Lib {
             set_sensitivity_gain: f!("set_sensitivity_gain"),
             set_lna_agc: f!("set_lna_agc"),
             set_mixer_agc: f!("set_mixer_agc"),
+            set_lna_gain: f!("set_lna_gain"),
+            set_mixer_gain: f!("set_mixer_gain"),
+            set_vga_gain: f!("set_vga_gain"),
             start_rx: f!("start_rx"),
             stop_rx: f!("stop_rx"),
             error_name: f!("error_name"),
@@ -255,6 +261,13 @@ impl Radio for Spy {
             Gain::Linearity(v) => self.lib.check("linearity gain", unsafe { (self.lib.set_linearity_gain)(self.dev, v.min(21)) }),
             Gain::Sensitivity(v) => self.lib.check("sensitivity gain", unsafe { (self.lib.set_sensitivity_gain)(self.dev, v.min(21)) }),
             Gain::Db(d) => self.set_gain(self.gain_from(d)),
+            Gain::Stages { lna, mix, vga } => {
+                self.lib.check("LNA AGC", unsafe { (self.lib.set_lna_agc)(self.dev, 0) })?;
+                self.lib.check("mixer AGC", unsafe { (self.lib.set_mixer_agc)(self.dev, 0) })?;
+                self.lib.check("LNA gain", unsafe { (self.lib.set_lna_gain)(self.dev, lna.min(14)) })?;
+                self.lib.check("mixer gain", unsafe { (self.lib.set_mixer_gain)(self.dev, mix.min(15)) })?;
+                self.lib.check("IF gain", unsafe { (self.lib.set_vga_gain)(self.dev, vga.min(15)) })
+            }
         }
     }
 
@@ -282,6 +295,7 @@ impl Radio for Spy {
         vec![
             "--gain 0-21: linearity preset (default 14); --gain auto: LNA and mixer AGC".into(),
             "--sensitivity 0-21: sensitivity preset instead".into(),
+            "--lna 0-14 --mix 0-15 --if 0-15: each stage set, AGC off (docs/airspy-gain-tables.md)".into(),
             format!("sample rate {:.1} MS/s (--rate: the highest at or under it)", self.rate / 1e6),
         ]
     }

@@ -41,6 +41,9 @@ pub enum Gain {
     /// dB: an RTL-SDR's tuner gain (the nearest it has); a HackRF's LNA gain
     /// (0-40, 8 dB steps).
     Db(f32),
+    /// Airspy / HydraSDR stages set one by one, AGC off: LNA 0-14, mixer
+    /// 0-15, IF (VGA) 0-15.
+    Stages { lna: u8, mix: u8, vga: u8 },
 }
 
 /// A tunable source of complex samples.

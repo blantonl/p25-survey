@@ -17,28 +17,40 @@ use survey_core::p25::nid::duid;
 use survey_core::p25::receiver::{ControlChannel, KINDS, Kind};
 use survey_radio::sigmf::Recording;
 
-const USAGE: &str = "usage:
-  p25-survey info <recording>
-  p25-survey decode <recording> --freq MHz[,MHz...] [--seconds S] [--json]
-  p25-survey detect <recording> [--at S] [--look S] [--threshold dB] [--levels MHz,MHz]
-  p25-survey scan --radio KIND[:SERIAL] --start MHz --stop MHz [--gain N|auto] [--rate MS/s]
-                  [scan options]
-      KIND: airspy, hydrasdr (--gain: linearity preset 0-21; --sensitivity 0-21)
-            rtlsdr (--gain: tuner dB; default AGC)
-            hackrf (--gain: LNA dB 0-40; --vga 0-62, default 24; --amp: the 14 dB amplifier)
+const USAGE: &str = concat!(
+    "p25-survey ",
+    env!("CARGO_PKG_VERSION"),
+    "
+usage:
+  p25-survey scan [--radio KIND[:SERIAL]] --start MHz --stop MHz [radio options] [scan options]
+      --radio: airspy, hydrasdr, rtlsdr, hackrf (default: the first plugged in)
+      radio options: [--rate MS/s] [--gain N|auto] [--ppm N] [--list-gains]
+        airspy, hydrasdr: --gain linearity preset 0-21 (default 14); --sensitivity 0-21;
+                          --lna 0-14 --mix 0-15 --if 0-15 (each stage, AGC off)
+        rtlsdr: --gain tuner dB (default AGC)
+        hackrf: --gain LNA dB 0-40 (default 16); --vga 0-62 (default 24); --amp
+      [--auto-gain [--gain-sweep N,N,...]]  (then offers to scan again at the advice)
   p25-survey scan <recording>... [--start MHz] [--stop MHz] [scan options]
-      scan options: [--threshold dB] [--max-dwell S] [--output survey.json [--resume]] [--hide-no-cc]
-                    [--ppm N]  (the radio's error, as the report gives it; a radio only)
-                    [--auto-gain [--gain-sweep 6,9,12,15,18]]  (a radio only)
+      scan options: [--step kHz[,kHz...]] [--threshold dB] [--confirm-timeout S] [--max-dwell S]
+                    [--output survey.json [--resume]] [--hide-no-cc] [--phase1-only]
                     [--rr [--rr-stdin]]  (look each control channel up in RadioReference;
                     --rr-stdin: username and password on standard input, not asked)
   p25-survey report <survey.json> [--rr [--rr-stdin]]   (the reports again; --rr: look it up now)
   p25-survey radios
-(a recording is a SigMF .sigmf-meta / .sigmf-data, or its name without either)";
+  p25-survey gains [--radio KIND[:SERIAL]]
+  p25-survey info <recording>
+  p25-survey decode <recording> --freq MHz[,MHz...] [--seconds S] [--json]
+  p25-survey detect <recording> [--at S] [--look S] [--threshold dB] [--levels MHz,MHz]
+(a recording is a SigMF .sigmf-meta / .sigmf-data, or its name without either)"
+);
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let r = match args.first().map(String::as_str) {
+        Some("--version" | "-V") => {
+            println!("p25-survey {}", env!("CARGO_PKG_VERSION"));
+            Ok(())
+        }
         Some("info") if args.len() == 2 => info(&args[1]),
         Some("decode") if args.len() >= 2 => decode(&args[1], &args[2..]),
         Some("detect") if args.len() >= 2 => detect(&args[1], &args[2..]),

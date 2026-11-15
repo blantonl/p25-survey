@@ -214,6 +214,7 @@ impl Radio for Rtl {
                 check("gain", unsafe { (self.lib.set_tuner_gain)(self.dev.0, g) })
             }
             Gain::Linearity(v) | Gain::Sensitivity(v) => self.set_gain(Gain::Db(v as f32)),
+            Gain::Stages { .. } => Err(RadioError("--lna/--mix/--if are an Airspy's or HydraSDR's".into())),
         }
     }
 

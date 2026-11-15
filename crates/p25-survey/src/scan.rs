@@ -98,6 +98,12 @@ impl Source {
 /// `--gain auto`, or `--sensitivity N` (Airspy, HydraSDR). Otherwise the
 /// radio's default: linearity 14, the RTL-SDR's AGC, HackRF LNA 16 dB.
 fn gain(rest: &[String], radio: &dyn Radio) -> Result<Gain, String> {
+    let stage = |name: &str| crate::opt(rest, name).map(|v| v.parse::<u8>().map_err(|_| format!("{name}: 0-15"))).transpose();
+    let (lna, mix, vga) = (stage("--lna")?, stage("--mix")?, stage("--if")?);
+    if lna.is_some() || mix.is_some() || vga.is_some() {
+        // Linearity 14's stages for any not given.
+        return Ok(Gain::Stages { lna: lna.unwrap_or(9), mix: mix.unwrap_or(6), vga: vga.unwrap_or(10) });
+    }
     if let Some(s) = crate::opt(rest, "--sensitivity") {
         return s.parse().map(Gain::Sensitivity).map_err(|_| "--sensitivity: 0-21".into());
     }
@@ -117,6 +123,7 @@ fn gain_number(source: &Source, g: Gain) -> Option<f64> {
     match (source, g) {
         (Source::Radio(_), Gain::Linearity(v) | Gain::Sensitivity(v)) => Some(v as f64),
         (Source::Radio(_), Gain::Db(d)) => Some(d as f64),
+        (Source::Radio(_), Gain::Stages { .. }) => None,
         _ => None,
     }
 }
@@ -147,6 +154,9 @@ const VALUE_FLAGS: &[&str] = &[
     "--output",
     "--gain-sweep",
     "--ppm",
+    "--lna",
+    "--mix",
+    "--if",
 ];
 const SWITCHES: &[&str] = &["--amp", "--hide-no-cc", "--rr", "--rr-stdin", "--auto-gain", "--resume", "--list-gains", "--phase1-only"];
 
@@ -603,7 +613,7 @@ fn offer_rescan(args: &[String], current: Gain, advice: &[(&str, usize, f32)]) -
     let now = match current {
         Gain::Linearity(v) | Gain::Sensitivity(v) => Some(v as f32),
         Gain::Db(d) => Some(d),
-        Gain::Auto => None,
+        Gain::Auto | Gain::Stages { .. } => None,
     };
     if now.is_some_and(|n| (n - g).abs() < 0.5) {
         println!("\nThe gain used ({g}) is the one advised for {band}: no need to scan again.");
@@ -621,7 +631,7 @@ fn offer_rescan(args: &[String], current: Gain, advice: &[(&str, usize, f32)]) -
     while i < args.len() {
         match args[i].as_str() {
             "--auto-gain" | "--resume" => i += 1,
-            "--gain" | "--gain-sweep" | "--sensitivity" | "--output" => i += 2,
+            "--gain" | "--gain-sweep" | "--sensitivity" | "--lna" | "--mix" | "--if" | "--output" => i += 2,
             a => {
                 again.push(a.to_string());
                 i += 1;
